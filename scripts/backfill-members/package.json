@@ -1,0 +1,14 @@
+{
+  "name": "backfill-members",
+  "version": "1.0.0",
+  "private": true,
+  "description": "One-time migration: backfill gyms/{gymId}/members for members who joined before that collection existed.",
+  "main": "backfill-members.js",
+  "scripts": {
+    "backfill": "node backfill-members.js",
+    "backfill:dry-run": "node backfill-members.js --dry-run"
+  },
+  "dependencies": {
+    "firebase-admin": "^14.2.0"
+  }
+}

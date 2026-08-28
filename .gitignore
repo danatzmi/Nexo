@@ -1,18 +1,46 @@
-# macOS
+# macOS / System
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
 
-# Xcode
+# Rolling review files
+SUMMARY.md
+FEEDBACK.md
+INSTRUCTIONS.md
+VERIFICATION.md
+
+# Xcode / iOS
 build/
 DerivedData/
-
-# User-specific settings
-*.xcuserstate
+*.pbxuser
+!default.pbxuser
+*.mode1v3
+!default.mode1v3
+*.mode2v3
+!default.mode2v3
+*.perspectivev3
+!default.perspectivev3
 xcuserdata/
+*.xccheckout
+*.moved-aside
+*.xcuserstate
+*.xcbkptlist
+*.xcscmblueprint
 
-# Swift Package Manager
-.build/
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+.idea/
+*.apk
+*.aab
+*.iml
+.cxx/
 
-# Migration/admin scripts (scripts/*)
-scripts/**/node_modules/
-scripts/**/service-account.json
-scripts/**/*-key.json
+# Node / Web POC (if applicable)
+node_modules/
+dist/
+.env.local

@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# Xcode
+build/
+DerivedData/
+
+# User-specific settings
+*.xcuserstate
+xcuserdata/
+
+# Swift Package Manager
+.build/
+
+# Migration/admin scripts (scripts/*)
+scripts/**/node_modules/
+scripts/**/service-account.json
+scripts/**/*-key.json

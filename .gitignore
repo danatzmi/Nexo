@@ -15,6 +15,8 @@ VERIFICATION.md
 # Xcode / iOS
 build/
 DerivedData/
+*.xcarchive
+*.xcarchive/
 *.pbxuser
 !default.pbxuser
 *.mode1v3
@@ -40,7 +42,13 @@ local.properties
 *.iml
 .cxx/
 
-# Node / Web POC (if applicable)
+# Node / Functions / Web
 node_modules/
+**/node_modules/
 dist/
+functions/lib/
 .env.local
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log

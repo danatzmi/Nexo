@@ -7,175 +7,97 @@
 
 import SwiftUI
 
+/// Shown to a signed-in, non-platform-admin user. There's no self-serve
+/// gym creation or public join directory (see FEEDBACK.md's "Owner-Driven
+/// Membership" model) — a user either already belongs to at least one gym
+/// (`gymsListView`) or is waiting for a gym owner to add them by email
+/// (`awaitingEnrollmentView`).
 struct GymPickerView: View {
     @Environment(AppState.self) private var appState
-    @State private var showCreateGym = false
-    @State private var showJoinGym = false
-    @State private var quickJoinCode = ""
-    @State private var isJoiningQuickCode = false
-    @State private var quickCodeError: String?
+    @State private var userEmail: String = ""
+    @State private var isRefreshing = false
 
     var body: some View {
         NavigationStack {
             Group {
                 if appState.myGyms.isEmpty {
-                    welcomeOnboardingView
+                    awaitingEnrollmentView
                 } else {
                     gymsListView
                 }
             }
             .navigationTitle(appState.myGyms.isEmpty ? "Welcome" : "Your Gyms")
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Menu {
-                        Button {
-                            showJoinGym = true
-                        } label: {
-                            Label("Join a Gym", systemImage: "person.badge.plus")
-                        }
-
-                        Button {
-                            showCreateGym = true
-                        } label: {
-                            Label("Create a Gym", systemImage: "plus.circle")
-                        }
-                    } label: {
-                        Image(systemName: "plus")
-                    }
-                }
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("Sign Out") { appState.signOut() }
                 }
             }
-            .sheet(isPresented: $showCreateGym) {
-                CreateGymView { gym in
-                    appState.myGyms.append((gym: gym, role: .owner))
-                    appState.enter(gym: gym, role: .owner)
-                }
-            }
-            .sheet(isPresented: $showJoinGym) {
-                JoinGymView { gym in
-                    appState.myGyms.append((gym: gym, role: .member))
-                    appState.enter(gym: gym, role: .member)
-                }
-            }
+            .task { await loadEmail() }
         }
     }
 
-    // MARK: - Welcome / No Gyms Onboarding Hub
+    // MARK: - Awaiting Enrollment
 
-    private var welcomeOnboardingView: some View {
-        ScrollView {
-            VStack(spacing: 28) {
-                // Hero Header
-                VStack(spacing: 10) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.accentColor.opacity(0.12))
-                            .frame(width: 80, height: 80)
-                        Image(systemName: "dumbbell.fill")
-                            .font(.system(size: 38))
-                            .foregroundStyle(Color.accentColor)
-                    }
-                    .padding(.top, 24)
+    private var awaitingEnrollmentView: some View {
+        VStack(spacing: 20) {
+            Spacer()
 
-                    Text("Welcome to Nexo")
-                        .font(.title.bold())
-
-                    Text("Choose how you'd like to get started:")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-
-                // 2 Big Choice Cards
-                VStack(spacing: 16) {
-                    // Option 1: Gym Member
-                    Button {
-                        showJoinGym = true
-                    } label: {
-                        HStack(spacing: 18) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 14)
-                                    .fill(Color.accentColor.opacity(0.15))
-                                    .frame(width: 56, height: 56)
-                                Image(systemName: "figure.run")
-                                    .font(.system(size: 26, weight: .semibold))
-                                    .foregroundStyle(Color.accentColor)
-                            }
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("I am a Gym Member")
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-
-                                Text("Find your gym, book classes, and track your daily workouts.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.leading)
-                            }
-
-                            Spacer()
-
-                            Image(systemName: "chevron.right")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(18)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(Color(uiColor: .secondarySystemBackground))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 18)
-                                        .stroke(Color.accentColor.opacity(0.3), lineWidth: 1.5)
-                                )
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    // Option 2: Gym Owner
-                    Button {
-                        showCreateGym = true
-                    } label: {
-                        HStack(spacing: 18) {
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 14)
-                                    .fill(Color.purple.opacity(0.15))
-                                    .frame(width: 56, height: 56)
-                                Image(systemName: "building.2.fill")
-                                    .font(.system(size: 24, weight: .semibold))
-                                    .foregroundStyle(Color.purple)
-                            }
-
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("I am a Gym Owner")
-                                    .font(.headline)
-                                    .foregroundStyle(.primary)
-
-                                Text("Set up a new gym, schedule classes, and manage your members.")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                                    .multilineTextAlignment(.leading)
-                            }
-
-                            Spacer()
-
-                            Image(systemName: "chevron.right")
-                                .font(.subheadline.bold())
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(18)
-                        .background(
-                            RoundedRectangle(cornerRadius: 18)
-                                .fill(Color(uiColor: .secondarySystemBackground))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 20)
-
-                Spacer(minLength: 32)
+            ZStack {
+                Circle()
+                    .fill(Color.accentColor.opacity(0.12))
+                    .frame(width: 80, height: 80)
+                Image(systemName: "hourglass")
+                    .font(.system(size: 34))
+                    .foregroundStyle(Color.accentColor)
             }
+
+            VStack(spacing: 10) {
+                Text("Welcome to Nexo!")
+                    .font(.title2.bold())
+
+                Text("You haven't been added to a gym yet.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+
+                if !userEmail.isEmpty {
+                    Text("Ask your gym owner to add you using your email:")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.top, 4)
+
+                    Text(userEmail)
+                        .font(.subheadline.weight(.semibold))
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10)
+                                .fill(Color(uiColor: .secondarySystemBackground))
+                        )
+                }
+            }
+            .padding(.horizontal, 32)
+
+            Button {
+                Task { await refresh() }
+            } label: {
+                if isRefreshing {
+                    ProgressView()
+                        .frame(maxWidth: .infinity)
+                } else {
+                    Text("Check Again")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                }
+            }
+            .buttonStyle(.borderedProminent)
+            .frame(maxWidth: 240)
+            .disabled(isRefreshing)
+
+            Spacer()
         }
+        .padding()
     }
 
     // MARK: - Existing Gyms List
@@ -201,5 +123,19 @@ struct GymPickerView: View {
                 }
             }
         }
+    }
+
+    // MARK: - Actions
+
+    private func loadEmail() async {
+        if let profile = try? await FirebaseBackend.shared.fetchUserProfile() {
+            userEmail = profile.email
+        }
+    }
+
+    private func refresh() async {
+        isRefreshing = true
+        await appState.refreshMyGyms()
+        isRefreshing = false
     }
 }

@@ -52,10 +52,11 @@ dependencies {
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.coroutines.play.services)
 
-    // Firebase (BOM + Auth + Firestore)
+    // Firebase (BOM + Auth + Firestore + Functions)
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.auth)
     implementation(libs.firebase.firestore)
+    implementation(libs.firebase.functions)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

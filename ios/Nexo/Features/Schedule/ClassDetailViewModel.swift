@@ -45,6 +45,13 @@ final class ClassDetailViewModel {
     /// kept separate so the view can tell the two outcomes apart and show
     /// the right title/icon.
     var waitlistSuccessMessage: String?
+    /// This member's active wallet items for this gym — loaded once
+    /// alongside booking status, used by `bookingBlockedReason` to
+    /// proactively dim the "Book Class" button before a doomed attempt is
+    /// even made. Owners/Coaches/Platform Admins bypass this check
+    /// entirely (the view skips it via `appState.canManageClasses`), so it
+    /// doesn't matter that this is fetched for them too.
+    var activePlans: [ActivePlanItem] = []
 
     init(gymId: UUID, gymClass: GymClass, backend: BackendService? = nil) {
         self.gymId = gymId
@@ -114,6 +121,23 @@ final class ClassDetailViewModel {
             waitlistPosition = nil
             waitlistTotal = 0
         }
+
+        if let uid = backend.currentUID() {
+            activePlans = (try? await backend.fetchActivePlans(gymId: gymId, userId: uid)) ?? []
+        }
+    }
+
+    /// nil when this member has an active plan/credit balance covering
+    /// `gymClass` (or when the caller bypasses this check — gated via
+    /// `appState.canManageClasses`); otherwise a short reason to show in
+    /// place of a dimmed "Book Class" button. Mirrors
+    /// `ScheduleViewModel.bookingBlockedReason(for:)`.
+    var bookingBlockedReason: String? {
+        let matching = activePlans.filter { $0.matches(gymClass: gymClass) }
+        if matching.contains(where: { $0.type == .unlimited || $0.availableCredits() > 0 }) {
+            return nil
+        }
+        return matching.isEmpty ? "No active plan" : "No credits remaining"
     }
 
     /// Mirrors `ScheduleViewModel`'s own `guardNotPast` — checked client-side too
@@ -127,6 +151,8 @@ final class ClassDetailViewModel {
     func book() async {
         guard guardNotPast() else { return }
 
+        let previousPlans = activePlans
+        activePlans = consumeCreditLocally(activePlans, for: gymClass)
         isBooked = true
         gymClass.currentAttendees += 1
         bookingSuccessMessage = "\(gymClass.title) · \(gymClass.formattedTime)"
@@ -134,6 +160,7 @@ final class ClassDetailViewModel {
         do {
             try await backend.book(gymId: gymId, classId: gymClass.id)
         } catch {
+            activePlans = previousPlans
             isBooked = false
             gymClass.currentAttendees = max(0, gymClass.currentAttendees - 1)
             bookingSuccessMessage = nil
@@ -144,12 +171,15 @@ final class ClassDetailViewModel {
     func cancelBooking() async {
         guard guardNotPast() else { return }
 
+        let previousPlans = activePlans
+        activePlans = refundCreditLocally(activePlans, for: gymClass)
         isBooked = false
         gymClass.currentAttendees = max(0, gymClass.currentAttendees - 1)
 
         do {
             try await backend.cancelBooking(gymId: gymId, classId: gymClass.id)
         } catch {
+            activePlans = previousPlans
             isBooked = true
             gymClass.currentAttendees += 1
             bookingMessage = "Failed to cancel: \(error.localizedDescription)"
@@ -186,5 +216,35 @@ final class ClassDetailViewModel {
             gymClass.waitlistCount += 1
             bookingMessage = "Failed to leave waitlist: \(error.localizedDescription)"
         }
+    }
+
+    private func consumeCreditLocally(_ plans: [ActivePlanItem], for gymClass: GymClass) -> [ActivePlanItem] {
+        if plans.contains(where: { $0.matches(gymClass: gymClass) && $0.type == .unlimited }) { return plans }
+        var list = plans
+        if let targetIndex = list.firstIndex(where: { $0.matches(gymClass: gymClass) && $0.type == .credits && $0.availableCredits() > 0 }) {
+            var item = list[targetIndex]
+            if item.resetPeriod == .monthly {
+                item.cycleCreditsUsed += 1
+            } else {
+                item.remainingCredits = max(0, item.remainingCredits - 1)
+            }
+            list[targetIndex] = item
+        }
+        return list
+    }
+
+    private func refundCreditLocally(_ plans: [ActivePlanItem], for gymClass: GymClass) -> [ActivePlanItem] {
+        if plans.contains(where: { $0.matches(gymClass: gymClass) && $0.type == .unlimited }) { return plans }
+        var list = plans
+        if let targetIndex = list.firstIndex(where: { $0.matches(gymClass: gymClass) && $0.type == .credits }) {
+            var item = list[targetIndex]
+            if item.resetPeriod == .monthly {
+                item.cycleCreditsUsed = max(0, item.cycleCreditsUsed - 1)
+            } else {
+                item.remainingCredits += 1
+            }
+            list[targetIndex] = item
+        }
+        return list
     }
 }

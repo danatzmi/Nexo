@@ -99,28 +99,26 @@ changes what current members already have in their wallet.
 
 ## `gyms/{gymId}`
 
-Created by an app admin or directly by a gym owner via self-serve onboarding. `gymId` is a UUID string.
+Created only by a Platform Admin (`createGym`), who assigns the owner by
+email — there is no self-serve gym creation and no public join directory.
+A member gets access to a gym only when its owner (or a coach) adds them
+directly by email from the gym's Members tab. `gymId` is a UUID string.
 
 | Field | Type | Notes |
 |-------|------|-------|
 | `name` | String | Display name of the gym |
 | `ownerUID` | String | Firebase Auth UID of the gym owner. `createGym` first checks `users` for a doc matching the given owner email — if a platform user already exists with that email (e.g. they're already a member/owner elsewhere), their existing UID is reused instead of registering a duplicate Auth account, and their existing `firstName`/`lastName` are used for the new gym's `team` record rather than whatever was typed into the create-gym form. Only registers a brand-new Auth user when the email is unrecognized. |
 | `workoutTypes` | Array\<String\> | This gym's own class type names — no longer a fixed enum. Defaults to `["CrossFit WOD", "HIIT", "Strength Training", "Cardio", "Yoga", "Pilates"]` (`WorkoutCategory.defaults`) for gyms without this field (older gyms predate it) and for newly created gyms. Managed via `GymSettingsSheet` (`updateGymSettings`, alongside `name`) — reachable from the gym switcher menu for an Owner/Admin, or from the Platform Dashboard's gym list swipe action for any gym as a platform admin. Referenced by `classType` (below). |
-| `joinCode` | String | Optional (e.g. `"IRON99"`). Short 6-to-8 character unique alphanumeric code used by members to join the gym during onboarding. |
 | `city` | String | Optional physical city/location (e.g. `"Tel Aviv, Israel"`). |
 | `createdAt` | Timestamp | |
 
----
-
-## `gymCodes/{joinCode}`
-
-Global lookup collection for O(1) member join resolution. The document ID is the uppercase join code (e.g. `"IRON99"`).
-
-| Field | Type | Notes |
-|-------|------|-------|
-| `gymId` | String | The UUID string of the gym. |
-| `gymName` | String | Cached display name of the gym. |
-| `createdAt` | Timestamp | |
+> There is no join-code-based joining, no public join directory, and no
+> gym approval workflow — every gym is admin-created and live immediately.
+> A user with no gym membership sees an "Awaiting Gym Enrollment" screen
+> until an owner adds them by email (`GymMembersView` → `AddMemberView` on
+> iOS, the equivalent Add Member flow on Android). Gym docs carry no
+> `joinCode` or `status` field; the `gymCodes/{joinCode}` lookup collection
+> has been removed entirely (any old data in it is orphaned and unused).
 
 ---
 

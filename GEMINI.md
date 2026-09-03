@@ -77,3 +77,25 @@ Keep `FEEDBACK.md` actionable: point at specific files/functions, say what's
 wrong and why, and be explicit about whether something is blocking
 (rejection) or optional (suggestion). Claude acts directly on what's
 written there, so vague feedback costs a review cycle to clarify.
+
+---
+
+## Active Tasks & Requirements (Owner-Driven Private Gym MVP)
+
+### 1. Unified Registration & Admin-Only Gym Creation
+* **Decision**: Remove "I am a Member" / "I am a Gym Owner" signup fork completely. All users register as standard platform users.
+* **Gym Creation**: Only Platform Admins can create gyms from the Platform Admin dashboard and assign owners. Regular users cannot create gyms.
+
+### 2. Owner-Driven Membership (No Public Directory, No Join Codes)
+* **Model**: Members do not browse or join gyms themselves. The Gym Owner (or staff) adds members directly from the gym's **Members** tab (`GymMembersView` -> `AddMemberView` by email).
+* **Empty Gym State**: If a user is not yet enrolled in any gym, display an **"Awaiting Gym Enrollment"** screen with their registered email address and a "Check Again / Refresh" button.
+* **No Join Codes**: Join codes are completely removed.
+
+### 3. Fast Optimistic Booking & Proactive Plan Check
+* **Decision**: Revert to fast optimistic booking (instant local confirmation + rollback on error) so booking feels snappy and instant.
+* **Proactive Plan Gating**: If a standard member has no active plan or 0 credits remaining, dim / disable the "Book" button on the class row and detail screen, preventing failures before they happen.
+* **Staff/Owner Bypass**: Gym owners, coaches, and platform admins always have active booking access.
+
+
+
+

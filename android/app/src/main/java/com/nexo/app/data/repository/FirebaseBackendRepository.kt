@@ -8,6 +8,9 @@ import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FieldPath
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.functions.FirebaseFunctions
+import com.google.firebase.functions.ktx.functions
+import com.google.firebase.ktx.Firebase
 import com.nexo.app.domain.model.ActivePlanItem
 import com.nexo.app.domain.model.Gym
 import com.nexo.app.domain.model.GymClass
@@ -25,9 +28,7 @@ import com.nexo.app.domain.model.UserRole
 import com.nexo.app.domain.model.ValidityUnit
 import com.nexo.app.domain.model.WorkoutLog
 import com.nexo.app.domain.model.applyTimeOfDay
-import com.nexo.app.domain.model.generateJoinCode
 import com.nexo.app.domain.model.mondayStartMillis
-import com.nexo.app.domain.model.sanitizeJoinCode
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
@@ -45,6 +46,8 @@ class FirebaseBackendRepository(
     private val auth: FirebaseAuth = FirebaseAuth.getInstance(),
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance()
 ) : BackendRepository {
+
+    private val functions: FirebaseFunctions = Firebase.functions("us-central1")
 
     private companion object {
         const val SECONDARY_APP_NAME = "Secondary"
@@ -167,167 +170,62 @@ class FirebaseBackendRepository(
     }
 
     override suspend fun bookClass(gymId: String, classId: String) {
-        val uid = currentUID() ?: throw BackendException.NotAuthenticated
-
-        val existing = bookingsRef(gymId)
-            .whereEqualTo("userId", uid)
-            .whereEqualTo("classId", classId)
-            .get().await()
-        if (!existing.isEmpty) return // already booked — idempotent, matches FakeBackendRepository/iOS
-
-        val classDoc = classesRef(gymId).document(classId).get().await()
-        val gymClass = parseClass(classDoc) ?: throw BackendException.ClassNotFound
-
-        // Wallet validation/credit-consumption can't run inside the
-        // transaction below (Firestore transactions can only do document
-        // reads/writes, not queries) — same constraint as the waitlist
-        // lookup in cancelBooking. Matches iOS's `book`, which isn't
-        // transactional at all; only the capacity check + booking write
-        // are wrapped here for atomicity.
-        val consumedActivePlanId = validateAndConsumeMembership(gymId, uid, gymClass)
-
-        val classRef = classesRef(gymId).document(classId)
-        val bookingRef = bookingsRef(gymId).document()
-
-        firestore.runTransaction { transaction ->
-            val snapshot = transaction.get(classRef)
-            if (!snapshot.exists()) throw BackendException.ClassNotFound
-            val capacity = snapshot.getLong("capacity")?.toInt() ?: 0
-            val currentAttendees = snapshot.getLong("currentAttendees")?.toInt() ?: 0
-            if (currentAttendees >= capacity) throw BackendException.ClassFull
-
-            val bookingData = mutableMapOf<String, Any>(
-                "userId" to uid,
-                "classId" to classId,
-                "bookedAt" to Timestamp.now()
-            )
-            consumedActivePlanId?.let { bookingData["activePlanId"] = it }
-
-            transaction.update(classRef, "currentAttendees", currentAttendees + 1)
-            transaction.set(bookingRef, bookingData)
-            null
-        }.await()
-    }
-
-    /**
-     * Enforces the member's plan wallet before a booking is created.
-     * Returns the [ActivePlanItem] id consumed (so it can be refunded on
-     * cancel), or `null` if an unlimited item authorized it (nothing to
-     * refund) or the caller is staff. Owners/coaches bypass this entirely
-     * — role governs their access, not a purchased plan. Mirrors iOS's
-     * `FirebaseBackend.validateAndConsumeMembership`.
-     */
-    private suspend fun validateAndConsumeMembership(gymId: String, userId: String, gymClass: GymClass): String? {
-        val snapshot = activePlansRef(gymId, userId).get().await()
-        val matching = snapshot.documents.mapNotNull { parseActivePlanItem(it) }.filter { it.matches(gymClass) }
-
-        if (matching.isNotEmpty()) {
-            if (matching.any { it.type == PlanComponentType.UNLIMITED }) return null
-
-            val creditItems = matching.filter { it.type == PlanComponentType.CREDITS && it.availableCredits() > 0 }
-                .sortedBy { it.expiresAtMillis }
-            val chosen = creditItems.firstOrNull() ?: throw BackendException.InsufficientCredits
-
-            val docRef = activePlansRef(gymId, userId).document(chosen.id)
-            if (chosen.resetPeriod == PlanResetPeriod.MONTHLY) {
-                val currentIndex = chosen.currentCycleIndex()
-                if (currentIndex != chosen.lastCycleIndex) {
-                    docRef.update(mapOf("cycleCreditsUsed" to 1, "lastCycleIndex" to currentIndex)).await()
-                } else {
-                    docRef.update("cycleCreditsUsed", FieldValue.increment(1)).await()
-                }
-            } else {
-                docRef.update("remainingCredits", FieldValue.increment(-1)).await()
-            }
-
-            return chosen.id
+        if (currentUID() == null) throw BackendException.NotAuthenticated
+        try {
+            functions.getHttpsCallable("bookClass").call(
+                mapOf("gymId" to gymId, "classId" to classId)
+            ).await()
+        } catch (e: Exception) {
+            throw parseFunctionsException(e)
         }
-
-        val userDoc = firestore.collection("users").document(userId).get().await()
-        val platformRole = PlatformRole.fromFirestoreValue(userDoc.getString("role").orEmpty())
-        if (platformRole == PlatformRole.ADMIN) return null
-
-        val membershipDoc = firestore.collection("users").document(userId)
-            .collection("memberships").document(gymId).get().await()
-        val role = UserRole.fromFirestoreValue(membershipDoc.getString("role").orEmpty())
-        if (role.canManageClasses) return null
-
-        throw BackendException.NoActiveMembership
     }
 
     override suspend fun cancelBooking(gymId: String, classId: String) {
         val uid = currentUID() ?: throw BackendException.NotAuthenticated
-        removeBooking(gymId, classId, uid)
-    }
-
-    override suspend fun cancelBooking(gymId: String, classId: String, onBehalfOf: String) {
-        removeBooking(gymId, classId, onBehalfOf)
-    }
-
-    private suspend fun removeBooking(gymId: String, classId: String, uid: String) {
         val existing = bookingsRef(gymId)
             .whereEqualTo("userId", uid)
             .whereEqualTo("classId", classId)
             .get().await()
-        if (existing.isEmpty) return // no matching booking — idempotent double-cancel guard
+        val bookingId = existing.documents.firstOrNull()?.id ?: throw BackendException.BookingNotFound
+        try {
+            functions.getHttpsCallable("cancelBooking").call(
+                mapOf("gymId" to gymId, "classId" to classId, "bookingId" to bookingId)
+            ).await()
+        } catch (e: Exception) {
+            throw parseFunctionsException(e)
+        }
+    }
 
-        val classRef = classesRef(gymId).document(classId)
-
-        // Firestore transactions can't run queries, only document reads/writes,
-        // so the waitlist lookup (who's first in line) happens outside the
-        // transaction — same as iOS's `removeBooking`, which is sequential
-        // awaits with no atomicity guarantee either. The counter update and
-        // booking/waitlist document mutations that follow from that lookup
-        // are still wrapped together for consistency.
-        val waitlistSnapshot = waitlistRef(gymId).whereEqualTo("classId", classId).get().await()
-        val firstWaiting = waitlistSnapshot.documents.minByOrNull { it.getTimestamp("joinedAt")?.toDate()?.time ?: Long.MAX_VALUE }
-        val waitingUserId = firstWaiting?.getString("userId")
-
-        firestore.runTransaction { transaction ->
-            val snapshot = transaction.get(classRef)
-            existing.documents.forEach { transaction.delete(it.reference) }
-
-            if (firstWaiting != null && waitingUserId != null) {
-                // Promote the first waiting user into the freed spot — attendance
-                // stays full, only waitlistCount drops.
-                val waitlistCount = snapshot.getLong("waitlistCount")?.toInt() ?: 0
-                transaction.update(classRef, "waitlistCount", (waitlistCount - 1).coerceAtLeast(0))
-                transaction.delete(firstWaiting.reference)
-                transaction.set(
-                    bookingsRef(gymId).document(),
-                    mapOf("userId" to waitingUserId, "classId" to classId, "bookedAt" to Timestamp.now())
-                )
-            } else {
-                val currentAttendees = snapshot.getLong("currentAttendees")?.toInt() ?: 0
-                transaction.update(classRef, "currentAttendees", (currentAttendees - 1).coerceAtLeast(0))
-            }
-            null
-        }.await()
-
-        // Refund happens after the transaction, same non-atomic-but-sequential
-        // shape as iOS's `removeBooking` (a plain `updateData` per canceled
-        // booking, not wrapped in the transaction above).
-        val consumedActivePlanIds = existing.documents.mapNotNull { it.getString("activePlanId") }
-        for (activePlanId in consumedActivePlanIds) {
-            val ref = activePlansRef(gymId, uid).document(activePlanId)
-            val data = ref.get().await()
-            if (data.getString("type") == PlanComponentType.CREDITS.firestoreValue) {
-                val resetPeriod = PlanResetPeriod.fromFirestoreValue(data.getString("resetPeriod") ?: PlanResetPeriod.NONE.firestoreValue)
-                if (resetPeriod == PlanResetPeriod.MONTHLY) {
-                    val currentUsed = data.getLong("cycleCreditsUsed")?.toInt() ?: 0
-                    if (currentUsed > 0) {
-                        ref.update("cycleCreditsUsed", FieldValue.increment(-1)).await()
-                    }
-                } else {
-                    ref.update("remainingCredits", FieldValue.increment(1)).await()
-                }
-            }
+    override suspend fun cancelBooking(gymId: String, classId: String, onBehalfOf: String) {
+        val existing = bookingsRef(gymId)
+            .whereEqualTo("userId", onBehalfOf)
+            .whereEqualTo("classId", classId)
+            .get().await()
+        val bookingId = existing.documents.firstOrNull()?.id ?: throw BackendException.BookingNotFound
+        try {
+            functions.getHttpsCallable("cancelBooking").call(
+                mapOf("gymId" to gymId, "classId" to classId, "bookingId" to bookingId, "onBehalfOfUserId" to onBehalfOf)
+            ).await()
+        } catch (e: Exception) {
+            throw parseFunctionsException(e)
         }
     }
 
     override suspend fun fetchActivePlans(gymId: String, userId: String): List<ActivePlanItem> {
         val snapshot = activePlansRef(gymId, userId).get().await()
         return snapshot.documents.mapNotNull { parseActivePlanItem(it) }
+    }
+
+    override fun observeActivePlans(gymId: String, userId: String): Flow<List<ActivePlanItem>> = callbackFlow {
+        val listener = activePlansRef(gymId, userId).addSnapshotListener { snapshot, error ->
+            if (error != null) {
+                close(error)
+                return@addSnapshotListener
+            }
+            val items = snapshot?.documents.orEmpty().mapNotNull { parseActivePlanItem(it) }
+            trySend(items)
+        }
+        awaitClose { listener.remove() }
     }
 
     override suspend fun grantPlanToMember(gymId: String, userId: String, plan: MembershipPlan, customExpiresAtMillis: Long?) {
@@ -740,25 +638,38 @@ class FirebaseBackendRepository(
     }
 
     override suspend fun joinWaitlist(gymId: String, classId: String) {
-        val uid = currentUID() ?: throw BackendException.NotAuthenticated
-        val classDoc = classesRef(gymId).document(classId).get().await()
-        val gymClass = parseClass(classDoc) ?: throw BackendException.ClassNotFound
-        if (gymClass.startTimeMillis < System.currentTimeMillis()) throw BackendException.ClassInPast
-
-        val existing = waitlistRef(gymId).whereEqualTo("userId", uid).whereEqualTo("classId", classId).get().await()
-        if (!existing.isEmpty) return // already waitlisted — idempotent
-
-        waitlistRef(gymId).add(mapOf("userId" to uid, "classId" to classId, "joinedAt" to Timestamp.now())).await()
-        adjustCounter(gymId, classId, "waitlistCount", 1)
+        if (currentUID() == null) throw BackendException.NotAuthenticated
+        try {
+            functions.getHttpsCallable("joinWaitlist").call(
+                mapOf("gymId" to gymId, "classId" to classId)
+            ).await()
+        } catch (e: Exception) {
+            throw parseFunctionsException(e)
+        }
     }
 
     override suspend fun leaveWaitlist(gymId: String, classId: String) {
-        val uid = currentUID() ?: throw BackendException.NotAuthenticated
-        val entries = waitlistRef(gymId).whereEqualTo("userId", uid).whereEqualTo("classId", classId).get().await()
-        if (entries.isEmpty) return
+        if (currentUID() == null) throw BackendException.NotAuthenticated
+        try {
+            functions.getHttpsCallable("leaveWaitlist").call(
+                mapOf("gymId" to gymId, "classId" to classId)
+            ).await()
+        } catch (e: Exception) {
+            throw parseFunctionsException(e)
+        }
+    }
 
-        entries.documents.forEach { it.reference.delete().await() }
-        adjustCounter(gymId, classId, "waitlistCount", -1)
+    private fun parseFunctionsException(e: Exception): Throwable {
+        val msg = e.message.orEmpty()
+        return when {
+            msg.contains("CLASS_FULL") || msg.contains("Class is full") -> BackendException.ClassFull
+            msg.contains("INSUFFICIENT_CREDITS") || msg.contains("No available credits") -> BackendException.InsufficientCredits
+            msg.contains("NO_ACTIVE_PLAN") || msg.contains("No active membership") -> BackendException.NoActiveMembership
+            msg.contains("CLASS_IN_PAST") || msg.contains("already started") -> BackendException.ClassInPast
+            msg.contains("CLASS_NOT_FOUND") || msg.contains("Class not found") -> BackendException.ClassNotFound
+            msg.contains("BOOKING_NOT_FOUND") || msg.contains("Booking not found") -> BackendException.BookingNotFound
+            else -> e
+        }
     }
 
     override suspend fun fetchMyWaitlistedClassIds(gymId: String): Set<String> {
@@ -817,11 +728,6 @@ class FirebaseBackendRepository(
             deleteAllDocuments(gymRef(gymId).collection(subcollection))
         }
 
-        val gymDoc = gymRef(gymId).get().await()
-        gymDoc.getString("joinCode")?.takeIf { it.isNotBlank() }?.let { code ->
-            firestore.collection("gymCodes").document(code.uppercase()).delete().await()
-        }
-
         gymRef(gymId).delete().await()
     }
 
@@ -838,52 +744,7 @@ class FirebaseBackendRepository(
         }
     }
 
-    override suspend fun createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: List<String>): Gym {
-        val uid = currentUID() ?: throw BackendException.NotAuthenticated
-
-        val requested = joinCode?.let { sanitizeJoinCode(it) }?.takeIf { it.isNotBlank() } ?: generateJoinCode(name)
-        var code = requested
-        var attempt = 1
-        while (firestore.collection("gymCodes").document(code).get().await().exists()) {
-            code = "$requested$attempt"
-            attempt++
-        }
-
-        val gymId = UUID.randomUUID().toString()
-        val gymData = mutableMapOf<String, Any>(
-            "name" to name,
-            "ownerUID" to uid,
-            "workoutTypes" to workoutTypes,
-            "joinCode" to code,
-            "createdAt" to Timestamp.now()
-        )
-        city?.let { gymData["city"] = it }
-        gymRef(gymId).set(gymData).await()
-
-        firestore.collection("gymCodes").document(code).set(
-            mapOf("gymId" to gymId, "gymName" to name, "createdAt" to Timestamp.now())
-        ).await()
-
-        val joinedAt = Timestamp.now()
-        firestore.collection("users").document(uid).collection("memberships").document(gymId).set(
-            mapOf("role" to UserRole.OWNER.firestoreValue, "joinedAt" to joinedAt)
-        ).await()
-
-        val userDoc = firestore.collection("users").document(uid).get().await()
-        teamRef(gymId).document(uid).set(
-            mapOf(
-                "role" to UserRole.OWNER.firestoreValue,
-                "firstName" to userDoc.getString("firstName").orEmpty(),
-                "lastName" to userDoc.getString("lastName").orEmpty(),
-                "email" to userDoc.getString("email").orEmpty(),
-                "addedAt" to joinedAt
-            )
-        ).await()
-
-        return Gym(id = gymId, name = name, ownerUID = uid, workoutTypes = workoutTypes, joinCode = code, city = city)
-    }
-
-    override suspend fun createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym {
+    override suspend fun createGym(name: String, city: String?, workoutTypes: List<String>, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym {
         currentUID() ?: throw BackendException.NotAuthenticated
 
         val existingUsers = firestore.collection("users").whereEqualTo("email", ownerEmail).get().await()
@@ -902,28 +763,16 @@ class FirebaseBackendRepository(
             resolvedLastName = ownerLastName
         }
 
-        val requested = generateJoinCode(name)
-        var code = requested
-        var attempt = 1
-        while (firestore.collection("gymCodes").document(code).get().await().exists()) {
-            code = "$requested$attempt"
-            attempt++
-        }
-
+        val resolvedWorkoutTypes = workoutTypes.ifEmpty { Gym.DEFAULT_WORKOUT_TYPES }
         val gymId = UUID.randomUUID().toString()
-        gymRef(gymId).set(
-            mapOf(
-                "name" to name,
-                "ownerUID" to ownerUID,
-                "workoutTypes" to Gym.DEFAULT_WORKOUT_TYPES,
-                "joinCode" to code,
-                "createdAt" to Timestamp.now()
-            )
-        ).await()
-
-        firestore.collection("gymCodes").document(code).set(
-            mapOf("gymId" to gymId, "gymName" to name, "createdAt" to Timestamp.now())
-        ).await()
+        val gymData = mutableMapOf<String, Any>(
+            "name" to name,
+            "ownerUID" to ownerUID,
+            "workoutTypes" to resolvedWorkoutTypes,
+            "createdAt" to Timestamp.now()
+        )
+        city?.let { gymData["city"] = it }
+        gymRef(gymId).set(gymData).await()
 
         val joinedAt = Timestamp.now()
         firestore.collection("users").document(ownerUID).collection("memberships").document(gymId).set(
@@ -940,43 +789,7 @@ class FirebaseBackendRepository(
             )
         ).await()
 
-        return Gym(id = gymId, name = name, ownerUID = ownerUID, workoutTypes = Gym.DEFAULT_WORKOUT_TYPES, joinCode = code)
-    }
-
-    override suspend fun fetchGymByJoinCode(code: String): Gym? {
-        val upper = code.uppercase()
-        val codeDoc = firestore.collection("gymCodes").document(upper).get().await()
-        val gymId = codeDoc.getString("gymId")
-        if (gymId != null) {
-            return parseGym(gymRef(gymId).get().await())
-        }
-
-        // Fallback for gyms predating the gymCodes lookup collection.
-        val snapshot = firestore.collection("gyms").whereEqualTo("joinCode", upper).limit(1).get().await()
-        return snapshot.documents.firstOrNull()?.let { parseGym(it) }
-    }
-
-    override suspend fun joinGymByCode(code: String): Gym {
-        val uid = currentUID() ?: throw BackendException.NotAuthenticated
-        val gym = fetchGymByJoinCode(code) ?: throw BackendException.GymNotFound
-
-        val joinedAt = Timestamp.now()
-        firestore.collection("users").document(uid).collection("memberships").document(gym.id).set(
-            mapOf("role" to UserRole.MEMBER.firestoreValue, "joinedAt" to joinedAt)
-        ).await()
-
-        val userDoc = firestore.collection("users").document(uid).get().await()
-        membersRef(gym.id).document(uid).set(
-            mapOf(
-                "firstName" to userDoc.getString("firstName").orEmpty(),
-                "lastName" to userDoc.getString("lastName").orEmpty(),
-                "email" to userDoc.getString("email").orEmpty(),
-                "role" to UserRole.MEMBER.firestoreValue,
-                "joinedAt" to joinedAt
-            )
-        ).await()
-
-        return gym
+        return Gym(id = gymId, name = name, ownerUID = ownerUID, workoutTypes = resolvedWorkoutTypes, city = city)
     }
 
     private fun parseGym(doc: DocumentSnapshot): Gym? {
@@ -989,7 +802,6 @@ class FirebaseBackendRepository(
             name = name,
             ownerUID = ownerUID,
             workoutTypes = workoutTypes,
-            joinCode = doc.getString("joinCode"),
             city = doc.getString("city")
         )
     }

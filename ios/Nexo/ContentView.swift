@@ -12,7 +12,6 @@ struct ContentView: View {
     @State private var isCheckingAuth = true
 
     var body: some View {
-        @Bindable var bindableState = appState
         Group {
             if isCheckingAuth {
                 SplashScreen()
@@ -28,23 +27,6 @@ struct ContentView: View {
             }
         }
         .environment(appState)
-        .onOpenURL { url in
-            Task { await appState.handleIncomingURL(url) }
-        }
-        .sheet(item: $bindableState.pendingInviteGym) { gym in
-            DirectJoinConfirmationSheet(gym: gym)
-        }
-        .alert(
-            "Invite",
-            isPresented: Binding(
-                get: { appState.inviteMessage != nil },
-                set: { if !$0 { appState.inviteMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) { }
-        } message: {
-            Text(appState.inviteMessage ?? "")
-        }
         .task {
             appState.isAuthenticated = FirebaseBackend.shared.currentUID() != nil
             if appState.isAuthenticated {
@@ -63,10 +45,6 @@ struct ContentView: View {
         appState.isAuthenticated = true
         if resolvedRole != .admin {
             appState.autoSelectGym()
-        }
-        if let pendingCode = appState.pendingJoinCode {
-            appState.pendingJoinCode = nil
-            await appState.processJoinCode(pendingCode)
         }
     }
 }
@@ -222,114 +200,6 @@ private struct SelectGymPlaceholder: View {
                 Spacer()
             }
             .frame(maxWidth: .infinity)
-        }
-    }
-}
-
-// MARK: - Direct Join Confirmation Sheet
-
-struct DirectJoinConfirmationSheet: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(AppState.self) private var appState
-
-    let gym: Gym
-    @State private var isJoining = false
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            VStack(spacing: 24) {
-                Spacer()
-
-                ZStack {
-                    Circle()
-                        .fill(Color.accentColor.opacity(0.12))
-                        .frame(width: 80, height: 80)
-                    Image(systemName: "ticket.fill")
-                        .font(.system(size: 38))
-                        .foregroundStyle(Color.accentColor)
-                }
-
-                VStack(spacing: 8) {
-                    Text("Gym Invite")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-
-                    Text(gym.name)
-                        .font(.title2.bold())
-                        .multilineTextAlignment(.center)
-
-                    if let city = gym.city, !city.isEmpty {
-                        Label(city, systemImage: "mappin.and.ellipse")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                if !gym.workoutTypes.isEmpty {
-                    Text(gym.workoutTypes.prefix(4).joined(separator: " • "))
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                if let errorMessage {
-                    Text(errorMessage)
-                        .font(.footnote)
-                        .foregroundStyle(.red)
-                }
-
-                VStack(spacing: 12) {
-                    Button {
-                        Task { await joinGym() }
-                    } label: {
-                        if isJoining {
-                            ProgressView()
-                                .tint(.white)
-                                .frame(maxWidth: .infinity)
-                        } else {
-                            Text("Join \(gym.name)")
-                                .font(.headline)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-                    .padding(.vertical, 14)
-                    .background(Color.accentColor)
-                    .foregroundStyle(.white)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .disabled(isJoining)
-
-                    Button("Not Now", role: .cancel) {
-                        dismiss()
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                }
-                .padding(.horizontal, 24)
-                .padding(.top, 12)
-
-                Spacer()
-            }
-            .padding()
-            .navigationBarTitleDisplayMode(.inline)
-        }
-    }
-
-    private func joinGym() async {
-        isJoining = true
-        errorMessage = nil
-        do {
-            try await FirebaseBackend.shared.joinGym(gymId: gym.id)
-            await MainActor.run {
-                appState.myGyms.append((gym: gym, role: .member))
-                appState.enter(gym: gym, role: .member)
-                dismiss()
-            }
-        } catch {
-            await MainActor.run {
-                self.errorMessage = error.localizedDescription
-                self.isJoining = false
-            }
         }
     }
 }

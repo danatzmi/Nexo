@@ -310,10 +310,39 @@ private struct ActivityFormFields: View {
     @Binding var repsText: String
     @Binding var setsText: String
     @Binding var date: Date
+    /// Movement names already logged at least once — shown as quick-pick
+    /// chips so adding another result for an existing exercise (e.g. a
+    /// second Squat entry) doesn't require retyping the name.
+    var existingMovements: [String] = []
 
     var body: some View {
         Section("Activity") {
             TextField("e.g. Squat, Yoga Flow, Heavy Bag Work", text: $movement)
+
+            if !existingMovements.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(existingMovements, id: \.self) { name in
+                            Button {
+                                movement = name
+                            } label: {
+                                Text(name)
+                                    .font(.caption2)
+                                    .fontWeight(movement == name ? .bold : .regular)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(movement == name ? Color.blue : Color(.secondarySystemFill))
+                                    .foregroundStyle(movement == name ? Color.white : Color.primary)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                }
+                .listRowInsets(EdgeInsets())
+                .padding(.horizontal)
+                .padding(.vertical, 4)
+            }
         }
 
         Section("Details") {
@@ -356,7 +385,7 @@ private struct AddWorkoutLogSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                ActivityFormFields(movement: $movement, scoreText: $scoreText, repsText: $repsText, setsText: $setsText, date: $date)
+                ActivityFormFields(movement: $movement, scoreText: $scoreText, repsText: $repsText, setsText: $setsText, date: $date, existingMovements: viewModel.displayedMovements)
             }
             .navigationTitle("Log Activity")
             .navigationBarTitleDisplayMode(.inline)
@@ -418,7 +447,7 @@ private struct EditActivitySheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                ActivityFormFields(movement: $movement, scoreText: $scoreText, repsText: $repsText, setsText: $setsText, date: $date)
+                ActivityFormFields(movement: $movement, scoreText: $scoreText, repsText: $repsText, setsText: $setsText, date: $date, existingMovements: viewModel.displayedMovements)
             }
             .navigationTitle("Edit Activity")
             .navigationBarTitleDisplayMode(.inline)

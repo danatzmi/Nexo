@@ -144,7 +144,7 @@ class ViewModelTest {
     }
 
     @Test
-    fun scheduleViewModel_book_movesClassIntoBookedIds_andIncrementsAttendees() = runTest {
+    fun scheduleViewModel_book_movesClassIntoBookedIds_andShowsASuccessMessage() = runTest {
         val repo = FakeBackendRepository()
         seedStandardGym(repo)
 
@@ -154,6 +154,8 @@ class ViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(true, unbookedFuture.id in state.bookedClassIds)
         assertEquals(1, state.allClasses.first { it.id == unbookedFuture.id }.currentAttendees)
+        assertEquals("Booked!", state.successMessage?.title)
+        assertEquals(false, state.successMessage?.isWaitlist)
     }
 
     @Test
@@ -182,13 +184,14 @@ class ViewModelTest {
 
         val state = viewModel.uiState.value
         assertEquals(true, state.errorMessage?.isNotBlank())
-        // Optimistic update must be rolled back — the failed booking can't be left showing as booked.
+        // Never optimistic — a failed booking must never have shown as booked.
         assertEquals(false, "full" in state.bookedClassIds)
         assertEquals(1, state.allClasses.first { it.id == "full" }.currentAttendees)
+        assertNull(state.successMessage)
     }
 
     @Test
-    fun scheduleViewModel_book_rollsBackOptimisticUpdate_whenRepositoryThrows() = runTest {
+    fun scheduleViewModel_book_rollsBackOptimisticUpdate_andClearsSuccessMessage_whenRepositoryThrows() = runTest {
         val repo = FakeBackendRepository()
         seedStandardGym(repo)
 
@@ -199,6 +202,7 @@ class ViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(false, unbookedFuture.id in state.bookedClassIds)
         assertEquals(0, state.allClasses.first { it.id == unbookedFuture.id }.currentAttendees)
+        assertNull(state.successMessage)
         assertEquals(true, state.errorMessage?.isNotBlank())
     }
 
@@ -218,7 +222,7 @@ class ViewModelTest {
     }
 
     @Test
-    fun scheduleViewModel_joinWaitlist_updatesWaitlistedIdsAndCount_optimistically() = runTest {
+    fun scheduleViewModel_joinWaitlist_updatesWaitlistedIdsAndCount_andShowsASuccessMessage() = runTest {
         val repo = FakeBackendRepository()
         val fullClass = GymClass(id = "full", title = "Packed WOD", coach = "Alex", startTimeMillis = now + 100_000, capacity = 1, currentAttendees = 1)
         repo.seedGym(Gym(id = "gym-1", name = "Iron Temple", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
@@ -231,10 +235,12 @@ class ViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(true, "full" in state.waitlistedClassIds)
         assertEquals(1, state.allClasses.first { it.id == "full" }.waitlistCount)
+        assertEquals("Waitlisted!", state.successMessage?.title)
+        assertEquals(true, state.successMessage?.isWaitlist)
     }
 
     @Test
-    fun scheduleViewModel_joinWaitlist_rollsBackOptimisticUpdate_whenRepositoryThrows() = runTest {
+    fun scheduleViewModel_joinWaitlist_rollsBackOptimisticUpdate_andClearsSuccessMessage_whenRepositoryThrows() = runTest {
         val repo = FakeBackendRepository()
         val fullClass = GymClass(id = "full", title = "Packed WOD", coach = "Alex", startTimeMillis = now + 100_000, capacity = 1, currentAttendees = 1)
         repo.seedGym(Gym(id = "gym-1", name = "Iron Temple", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
@@ -248,6 +254,7 @@ class ViewModelTest {
         val state = viewModel.uiState.value
         assertEquals(false, "full" in state.waitlistedClassIds)
         assertEquals(0, state.allClasses.first { it.id == "full" }.waitlistCount)
+        assertNull(state.successMessage)
         assertEquals(true, state.errorMessage?.isNotBlank())
     }
 
@@ -285,6 +292,46 @@ class ViewModelTest {
         assertEquals(true, "full" in state.waitlistedClassIds)
         assertEquals(1, state.allClasses.first { it.id == "full" }.waitlistCount)
         assertEquals(true, state.errorMessage?.isNotBlank())
+    }
+
+    // MARK: - Proactive plan/credit dimming
+
+    @Test
+    fun scheduleViewModel_bookingBlockedReason_isNull_withACoveringUnlimitedPlan() = runTest {
+        val repo = FakeBackendRepository()
+        seedStandardGym(repo)
+
+        val viewModel = ScheduleViewModel(repo, "gym-1")
+
+        assertNull(viewModel.uiState.value.bookingBlockedReason(unbookedFuture))
+    }
+
+    @Test
+    fun scheduleViewModel_bookingBlockedReason_isNoActivePlan_withNoPlansAtAll() = runTest {
+        val repo = FakeBackendRepository()
+        repo.seedGym(Gym(id = "gym-1", name = "Iron Temple", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
+        repo.seedClass("gym-1", unbookedFuture)
+        repo.signedInUID = "member-1"
+
+        val viewModel = ScheduleViewModel(repo, "gym-1")
+
+        assertEquals("No active plan", viewModel.uiState.value.bookingBlockedReason(unbookedFuture))
+    }
+
+    @Test
+    fun scheduleViewModel_bookingBlockedReason_isNoCreditsRemaining_withAMatchingButExhaustedCreditPlan() = runTest {
+        val repo = FakeBackendRepository()
+        repo.seedGym(Gym(id = "gym-1", name = "Iron Temple", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
+        repo.seedClass("gym-1", unbookedFuture)
+        repo.seedActivePlan(
+            "gym-1", "member-1",
+            ActivePlanItem(id = "plan-exhausted", planName = "10-Class Pass", type = PlanComponentType.CREDITS, creditCount = 10, remainingCredits = 0, expiresAtMillis = now + 1_000_000_000)
+        )
+        repo.signedInUID = "member-1"
+
+        val viewModel = ScheduleViewModel(repo, "gym-1")
+
+        assertEquals("No credits remaining", viewModel.uiState.value.bookingBlockedReason(unbookedFuture))
     }
 
     @Test

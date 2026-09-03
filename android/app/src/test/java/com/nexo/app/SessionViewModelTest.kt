@@ -63,6 +63,22 @@ class SessionViewModelTest {
     }
 
     @Test
+    fun refresh_movesFromNoGymsToReady_onceTheOwnerHasAddedTheUser() = runTest {
+        val repo = FakeBackendRepository()
+        repo.signedInUID = "member-1"
+        val viewModel = SessionViewModel(repo, InMemorySessionStore())
+        assertEquals(SessionViewModel.SessionState.NoGyms, viewModel.state.value)
+
+        // Simulate the gym owner adding this user by email while they're on the waiting screen.
+        repo.seedGym(Gym(id = "gym-1", name = "Iron Temple", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
+        viewModel.refresh()
+
+        val state = viewModel.state.value
+        assertTrue(state is SessionViewModel.SessionState.Ready)
+        assertEquals("gym-1", (state as SessionViewModel.SessionState.Ready).gymId)
+    }
+
+    @Test
     fun state_isReady_withTheFirstGym_whenNoLastGymWasSaved() = runTest {
         val repo = FakeBackendRepository()
         repo.seedGym(Gym(id = "gym-1", name = "Gym One", ownerUID = "owner-1"), UserRole.MEMBER, "member-1")
@@ -176,7 +192,7 @@ class SessionViewModelTest {
     }
 
     @Test
-    fun state_isReady_forAnAdminWithAPreviouslySavedGym() = runTest {
+    fun state_isPlatformDashboard_forAnAdminOnLaunch_matchingIOS() = runTest {
         val repo = FakeBackendRepository()
         repo.seedGym(Gym(id = "gym-1", name = "Gym One", ownerUID = "owner-1"), UserRole.OWNER, "admin-1")
         repo.seedPlatformRole("admin-1", PlatformRole.ADMIN)
@@ -186,8 +202,7 @@ class SessionViewModelTest {
         val viewModel = SessionViewModel(repo, store)
 
         val state = viewModel.state.value
-        assertTrue(state is SessionViewModel.SessionState.Ready)
-        assertEquals("gym-1", (state as SessionViewModel.SessionState.Ready).gymId)
+        assertTrue(state is SessionViewModel.SessionState.PlatformDashboard)
     }
 
     @Test
@@ -214,57 +229,15 @@ class SessionViewModelTest {
         val store = InMemorySessionStore().apply { stored = "gym-1" }
         val viewModel = SessionViewModel(repo, store)
 
+        // First enter gym to put state into Ready
+        viewModel.enterGym("gym-1")
+        assertTrue(viewModel.state.value is SessionViewModel.SessionState.Ready)
+
+        // Now return to Platform Dashboard
         viewModel.enterPlatformDashboard()
 
         assertTrue(viewModel.state.value is SessionViewModel.SessionState.PlatformDashboard)
         assertNull(store.stored)
     }
 
-    // MARK: - Deep link: join-by-code
-
-    @Test
-    fun presentDeepLinkCode_resolvesTheGymForTheDialog() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        repo.createGymForCurrentUser("Iron Temple", null, joinCode = "IRON99", workoutTypes = emptyList())
-        val viewModel = SessionViewModel(repo, InMemorySessionStore())
-
-        viewModel.presentDeepLinkCode("IRON99")
-
-        assertEquals("Iron Temple", viewModel.directJoinState.value?.gym?.name)
-        assertEquals(false, viewModel.directJoinState.value?.isLoading)
-    }
-
-    @Test
-    fun confirmDirectJoin_entersTheGym_afterJoining() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        repo.createGymForCurrentUser("Iron Temple", null, joinCode = "IRON99", workoutTypes = emptyList())
-
-        repo.signedInUID = "member-1"
-        val viewModel = SessionViewModel(repo, InMemorySessionStore())
-        viewModel.presentDeepLinkCode("IRON99")
-
-        viewModel.confirmDirectJoin()
-
-        val state = viewModel.state.value
-        assertTrue(state is SessionViewModel.SessionState.Ready)
-        assertNull(viewModel.directJoinState.value)
-    }
-
-    @Test
-    fun confirmDirectJoin_forAnAlreadyEnrolledGym_switchesInto_withoutRejoining() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        val gym = repo.createGymForCurrentUser("Iron Temple", null, joinCode = "IRON99", workoutTypes = emptyList())
-        val viewModel = SessionViewModel(repo, InMemorySessionStore())
-        viewModel.presentDeepLinkCode("IRON99")
-
-        viewModel.confirmDirectJoin()
-
-        val state = viewModel.state.value as SessionViewModel.SessionState.Ready
-        assertEquals(gym.id, state.gymId)
-        // Still the Owner — confirmDirectJoin must not have re-joined as Member.
-        assertEquals(UserRole.OWNER, repo.fetchMyGyms().first { it.first.id == gym.id }.second)
-    }
 }

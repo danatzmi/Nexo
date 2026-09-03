@@ -49,6 +49,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -102,6 +103,19 @@ fun ClassDetailScreen(
         if (uiState.didDelete) onBack()
     }
 
+    // Fires only once the Book/Waitlist call is server-confirmed — see
+    // ClassDetailViewModel.SuccessMessage's doc comment. Never triggered
+    // from the action bar's onClick directly.
+    LaunchedEffect(uiState.successMessage) {
+        uiState.successMessage?.let {
+            successPopupTitle = it.title
+            successPopupMessage = it.message
+            successPopupIsWaitlist = it.isWaitlist
+            showSuccessPopup = true
+            viewModel.clearSuccessMessage()
+        }
+    }
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Scaffold(
             topBar = {
@@ -133,22 +147,10 @@ fun ClassDetailScreen(
                         isWaitlisted = uiState.isWaitlisted,
                         waitlistPosition = uiState.waitlistPosition,
                         isFull = gymClass.isFull,
-                        isActionInProgress = uiState.isActionInProgress,
-                        onBook = {
-                            viewModel.book()
-                            successPopupTitle = "Booked!"
-                            successPopupMessage = "${gymClass.title} · ${gymClass.formattedTime}"
-                            successPopupIsWaitlist = false
-                            showSuccessPopup = true
-                        },
+                        bookingBlockedReason = if (canManage) null else uiState.bookingBlockedReason,
+                        onBook = viewModel::book,
                         onCancel = { showCancelDialog = true },
-                        onJoinWaitlist = {
-                            viewModel.joinWaitlist()
-                            successPopupTitle = "Waitlisted!"
-                            successPopupMessage = "${gymClass.title} · ${gymClass.formattedTime}"
-                            successPopupIsWaitlist = true
-                            showSuccessPopup = true
-                        },
+                        onJoinWaitlist = viewModel::joinWaitlist,
                         onLeaveWaitlist = { showLeaveWaitlistDialog = true }
                     )
                 }
@@ -320,10 +322,13 @@ private fun AttendeesCard(
     onToggleAttendance: (Member) -> Unit
 ) {
     val spots = "${gymClass.currentAttendees}/${gymClass.capacity}"
-    val title = when {
-        canManage -> "Attendees ($spots · $checkedInCount Checked In)"
-        isWaitlisted && waitlistPosition != null -> "Attendees ($spots · Waitlist: $waitlistPosition/${gymClass.waitlistCount})"
-        else -> "Attendees ($spots)"
+    var title = "Attendees: ($spots)"
+    if (gymClass.waitlistCount > 0) {
+        val waitlist = if (isWaitlisted) "${waitlistPosition ?: 0}/${gymClass.waitlistCount}" else "${gymClass.waitlistCount}"
+        title += " · Waitlist: ($waitlist)"
+    }
+    if (canManage) {
+        title += " · Checked In: ($checkedInCount/${gymClass.currentAttendees})"
     }
 
     Card(Modifier.fillMaxWidth()) {
@@ -412,7 +417,8 @@ private fun ClassDetailActionBar(
     isWaitlisted: Boolean,
     waitlistPosition: Int?,
     isFull: Boolean,
-    isActionInProgress: Boolean,
+    /** null when this member can book (or bypasses the check as staff); otherwise a short reason — "No active plan" / "No credits remaining" — shown under a dimmed, disabled "Book Class" button instead of the normal one. */
+    bookingBlockedReason: String?,
     onBook: () -> Unit,
     onCancel: () -> Unit,
     onJoinWaitlist: () -> Unit,
@@ -423,54 +429,46 @@ private fun ClassDetailActionBar(
             when {
                 isBooked -> OutlinedButton(
                     onClick = onCancel,
-                    enabled = !isActionInProgress,
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text("Cancel Booking")
-                    }
+                    Text("Cancel Booking")
                 }
 
                 isWaitlisted -> OutlinedButton(
                     onClick = onLeaveWaitlist,
-                    enabled = !isActionInProgress,
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                    } else {
-                        Text(if (waitlistPosition != null) "Leave Waitlist (Position #$waitlistPosition)" else "Leave Waitlist")
-                    }
+                    Text(if (waitlistPosition != null) "Leave Waitlist (Position #$waitlistPosition)" else "Leave Waitlist")
                 }
 
                 isFull -> Button(
                     onClick = onJoinWaitlist,
-                    enabled = !isActionInProgress,
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
-                    } else {
-                        Text("Join Waitlist")
+                    Text("Join Waitlist")
+                }
+
+                bookingBlockedReason != null -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Button(
+                        onClick = {},
+                        enabled = false,
+                        modifier = Modifier.fillMaxWidth().height(52.dp).alpha(0.45f)
+                    ) {
+                        Text("Book Class")
                     }
+                    Text(
+                        text = bookingBlockedReason,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
                 }
 
                 else -> Button(
                     onClick = onBook,
-                    enabled = !isActionInProgress,
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    if (isActionInProgress) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(20.dp),
-                            strokeWidth = 2.dp,
-                            color = MaterialTheme.colorScheme.onPrimary
-                        )
-                    } else {
-                        Text("Book Class")
-                    }
+                    Text("Book Class")
                 }
             }
         }

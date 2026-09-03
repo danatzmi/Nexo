@@ -13,7 +13,6 @@ data class Gym(
     val name: String,
     val ownerUID: String,
     val workoutTypes: List<String> = DEFAULT_WORKOUT_TYPES,
-    val joinCode: String? = null,
     val city: String? = null
 ) {
     companion object {

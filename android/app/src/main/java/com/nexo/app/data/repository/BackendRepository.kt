@@ -96,6 +96,8 @@ interface BackendRepository {
      * method is read-only, for display.
      */
     suspend fun fetchActivePlans(gymId: String, userId: String): List<ActivePlanItem>
+    /** Real-time stream of the member's active credit-wallet items — updates instantly on mutations. */
+    fun observeActivePlans(gymId: String, userId: String): Flow<List<ActivePlanItem>>
     /**
      * Grants [userId] one credit-wallet item per component in [plan]'s
      * template — mirrors iOS's `grantPlanToMember(gymId:userId:plan:customExpiresAt:)`.
@@ -200,23 +202,18 @@ interface BackendRepository {
     /** Permanently deletes a gym and everything under it (classes, bookings, waitlist, team, members, membership plans, and every user's membership) — Platform Admin only. No undo. */
     suspend fun deleteGym(gymId: String)
 
-    /** Creates a gym owned by the signed-in user, with a generated-or-sanitized join code — the self-serve "I am a Gym Owner" onboarding path. */
-    suspend fun createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: List<String>): Gym
     /**
-     * Platform Admin creates a gym on behalf of another owner — mirrors
-     * iOS's `createGym(name:ownerFirstName:ownerLastName:ownerEmail:ownerPassword:)`,
-     * distinct from the self-serve [createGymForCurrentUser]. If
-     * [ownerEmail] already belongs to a platform user, that existing
+     * The only way a gym gets created: Platform Admin creates a gym and
+     * assigns its owner by email — mirrors iOS's
+     * `createGym(name:city:workoutTypes:ownerFirstName:ownerLastName:ownerEmail:ownerPassword:)`.
+     * If [ownerEmail] already belongs to a platform user, that existing
      * account becomes the owner (their own name is used, not
      * [ownerFirstName]/[ownerLastName]); otherwise a brand-new account is
      * registered via the same secondary-`FirebaseApp` mechanism as
-     * [registerTeamMember]/[registerMember]. The join code is always
-     * auto-generated (no custom-code input on this admin path).
+     * [registerTeamMember]/[registerMember]. The gym is live immediately —
+     * there is no approval gate, and no self-serve creation path.
      */
-    suspend fun createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym
-    suspend fun fetchGymByJoinCode(code: String): Gym?
-    /** Resolves [code] to a gym and enrolls the signed-in user as a member. Throws [BackendException.GymNotFound] if the code doesn't match any gym. */
-    suspend fun joinGymByCode(code: String): Gym
+    suspend fun createGym(name: String, city: String?, workoutTypes: List<String>, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym
 }
 
 /**
@@ -230,7 +227,7 @@ sealed class BackendException(message: String) : Exception(message) {
     object ClassFull : BackendException("Class is full")
     object UserNotFound : BackendException("No account found with that email — they need to sign up first.")
     object ClassInPast : BackendException("Cannot book or join waitlist for a class that has already started.")
-    object GymNotFound : BackendException("No gym found with that join code.")
     object NoActiveMembership : BackendException("No active membership. Please contact your gym to purchase a plan.")
     object InsufficientCredits : BackendException("Insufficient credits. Please contact your gym to purchase more.")
+    object BookingNotFound : BackendException("Booking not found.")
 }

@@ -111,7 +111,7 @@ final class MockBackendService: BackendService {
     func fetchMyGyms() async throws -> [(gym: Gym, role: UserRole)] { try throwIfNeeded(); return myGymsList }
     func fetchAvailableGyms() async throws -> [Gym] { try throwIfNeeded(); return Array(gyms.values) }
 
-    func createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym {
+    func createGym(name: String, city: String?, workoutTypes: [String], ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym {
         try throwIfNeeded()
 
         let ownerUID: String
@@ -131,50 +131,13 @@ final class MockBackendService: BackendService {
             users[ownerUID] = PlatformUser(id: ownerUID, firstName: ownerFirstName, lastName: ownerLastName, email: ownerEmail, role: .user)
         }
 
-        let code = String(name.filter { $0.isLetter }.uppercased().prefix(4)) + "99"
-        let gym = Gym(name: name, ownerUID: ownerUID, joinCode: code)
-        gyms[gym.id] = gym
-        team[gym.id, default: []].append(TeamMember(id: ownerUID, firstName: resolvedFirstName, lastName: resolvedLastName, email: ownerEmail, role: .owner))
-        return gym
-    }
-
-    func createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: [String]) async throws -> Gym {
-        try throwIfNeeded()
-        guard let uid = signedInUID, let user = users[uid] else { throw MockBackendError.notAuthenticated }
-
-        let code = (joinCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().isEmpty == false)
-            ? joinCode!.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            : String(name.filter { $0.isLetter }.uppercased().prefix(4)) + "99"
-
         let resolvedWorkoutTypes = workoutTypes.isEmpty ? WorkoutCategory.defaults : workoutTypes
-        let gym = Gym(name: name, ownerUID: uid, workoutTypes: resolvedWorkoutTypes, joinCode: code, city: city)
+        let gym = Gym(name: name, ownerUID: ownerUID, workoutTypes: resolvedWorkoutTypes, city: city)
         gyms[gym.id] = gym
-        userRoles[gym.id, default: [:]][uid] = .owner
-        team[gym.id, default: []].append(TeamMember(id: uid, firstName: user.firstName, lastName: user.lastName, email: user.email, role: .owner))
-        myGymsList.append((gym: gym, role: .owner))
-        return gym
-    }
-
-    func fetchGymByJoinCode(code: String) async throws -> Gym? {
-        try throwIfNeeded()
-        let clean = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        return gyms.values.first { $0.joinCode?.uppercased() == clean }
-    }
-
-    func joinGym(gymId: UUID) async throws {
-        try throwIfNeeded()
-        guard let uid = signedInUID, let user = users[uid] else { throw MockBackendError.notAuthenticated }
-        members[gymId, default: []].append(Member(id: uid, name: user.fullName, email: user.email, joinedAt: Date()))
-    }
-
-    func joinGymByCode(code: String) async throws -> Gym {
-        try throwIfNeeded()
-        guard let gym = try await fetchGymByJoinCode(code: code) else {
-            throw MockBackendError.classNotFound
-        }
-        try await joinGym(gymId: gym.id)
-        if !myGymsList.contains(where: { $0.gym.id == gym.id }) {
-            myGymsList.append((gym: gym, role: .member))
+        userRoles[gym.id, default: [:]][ownerUID] = .owner
+        team[gym.id, default: []].append(TeamMember(id: ownerUID, firstName: resolvedFirstName, lastName: resolvedLastName, email: ownerEmail, role: .owner))
+        if ownerUID == signedInUID {
+            myGymsList.append((gym: gym, role: .owner))
         }
         return gym
     }

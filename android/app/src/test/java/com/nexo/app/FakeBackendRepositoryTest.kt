@@ -1269,54 +1269,19 @@ class FakeBackendRepositoryTest {
         assertTrue(repo.fetchClasses("gym-1").isEmpty())
     }
 
-    // MARK: - Gym onboarding & join codes
-
-    @Test
-    fun createGymForCurrentUser_generatesAJoinCode_andEnrollsTheCreatorAsOwner() = runTest {
-        val repo = FakeBackendRepository()
-        repo.seedProfile("owner-1", Member(id = "owner-1", fullName = "Dana Cohen", email = "dana@example.com"))
-        repo.signedInUID = "owner-1"
-
-        val gym = repo.createGymForCurrentUser("Iron Temple", "Tel Aviv", joinCode = null, workoutTypes = listOf("CrossFit"))
-
-        assertTrue(gym.joinCode?.isNotBlank() == true)
-        val myGyms = repo.fetchMyGyms()
-        assertEquals(1, myGyms.size)
-        assertEquals(UserRole.OWNER, myGyms.first().second)
-    }
-
-    @Test
-    fun createGymForCurrentUser_sanitizesACustomJoinCode() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-
-        val gym = repo.createGymForCurrentUser("Iron Temple", null, joinCode = "iron-99!", workoutTypes = emptyList())
-
-        assertEquals("IRON99", gym.joinCode)
-    }
-
-    @Test
-    fun createGymForCurrentUser_disambiguatesACollidingJoinCode() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        repo.createGymForCurrentUser("Gym One", null, joinCode = "SAME01", workoutTypes = emptyList())
-
-        repo.signedInUID = "owner-2"
-        val second = repo.createGymForCurrentUser("Gym Two", null, joinCode = "SAME01", workoutTypes = emptyList())
-
-        assertEquals(false, second.joinCode == "SAME01")
-    }
+    // MARK: - Admin-only gym creation & owner assignment
 
     @Test
     fun createGym_registersANewAccount_andMakesThemOwner_whenTheEmailIsUnregistered() = runTest {
         val repo = FakeBackendRepository()
         repo.signedInUID = "admin-1"
 
-        val gym = repo.createGym("Iron Temple", "Dana", "Cohen", "dana@example.com", "password123")
+        val gym = repo.createGym("Iron Temple", "Tel Aviv", listOf("CrossFit"), "Dana", "Cohen", "dana@example.com", "password123")
 
         assertEquals(UserRole.OWNER, repo.fetchTeam(gym.id).first().role)
         assertEquals("Dana Cohen", repo.fetchTeam(gym.id).first().fullName)
-        assertTrue(gym.joinCode?.isNotBlank() == true)
+        assertEquals("Tel Aviv", gym.city)
+        assertEquals(listOf("CrossFit"), gym.workoutTypes)
     }
 
     @Test
@@ -1325,51 +1290,21 @@ class FakeBackendRepositoryTest {
         repo.signedInUID = "admin-1"
         repo.seedProfile("existing-owner", Member(id = "existing-owner", fullName = "Sam Lee", email = "sam@example.com"))
 
-        val gym = repo.createGym("Iron Temple", "Ignored", "Name", "sam@example.com", "password123")
+        val gym = repo.createGym("Iron Temple", null, emptyList(), "Ignored", "Name", "sam@example.com", "password123")
 
         assertEquals("existing-owner", gym.ownerUID)
         assertEquals("Sam Lee", repo.fetchTeam(gym.id).first().fullName)
     }
 
     @Test
-    fun fetchGymByJoinCode_isCaseInsensitive() = runTest {
+    fun createGym_isImmediatelyVisibleAndJoinableByTheAssignedOwner() = runTest {
         val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        val gym = repo.createGymForCurrentUser("Iron Temple", null, joinCode = "IRON99", workoutTypes = emptyList())
+        repo.signedInUID = "admin-1"
 
-        assertEquals(gym.id, repo.fetchGymByJoinCode("iron99")?.id)
-    }
+        val gym = repo.createGym("Iron Temple", null, emptyList(), "Dana", "Cohen", "dana@example.com", "password123")
 
-    @Test
-    fun fetchGymByJoinCode_returnsNull_forAnUnknownCode() = runTest {
-        val repo = FakeBackendRepository()
-
-        assertNull(repo.fetchGymByJoinCode("NOPE00"))
-    }
-
-    @Test
-    fun joinGymByCode_enrollsTheSignedInUserAsAMember() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
-        val gym = repo.createGymForCurrentUser("Iron Temple", null, joinCode = "IRON99", workoutTypes = emptyList())
-
-        repo.signedInUID = "member-1"
-        val joined = repo.joinGymByCode("IRON99")
-
-        assertEquals(gym.id, joined.id)
-        assertEquals(UserRole.MEMBER, repo.fetchMyGyms().first { it.first.id == gym.id }.second)
-    }
-
-    @Test
-    fun joinGymByCode_throwsGymNotFound_forAnUnknownCode() = runTest {
-        val repo = FakeBackendRepository()
-        repo.signedInUID = "member-1"
-
-        try {
-            repo.joinGymByCode("NOPE00")
-            fail("Expected BackendException.GymNotFound")
-        } catch (e: BackendException.GymNotFound) {
-            // expected
-        }
+        assertTrue(repo.fetchAvailableGyms().any { it.id == gym.id })
+        repo.signedInUID = gym.ownerUID
+        assertEquals(UserRole.OWNER, repo.fetchMyGyms().first { it.first.id == gym.id }.second)
     }
 }

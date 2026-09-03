@@ -177,7 +177,7 @@ private fun PlanRow(plan: MembershipPlan, onEdit: () -> Unit, onDelete: () -> Un
             Column(Modifier.weight(1f)) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(text = plan.name, style = MaterialTheme.typography.titleMedium)
-                    Text(text = "$${"%.2f".format(plan.price)}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = if (plan.price % 1.0 == 0.0) "%.0f".format(plan.price) else "%.2f".format(plan.price), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 PlanTypeTag(plan.type)
                 plan.components.forEach { component ->
@@ -251,7 +251,7 @@ private fun PlanFormDialog(
                             onClick = {
                                 // When creating a new plan, suggest reasonable defaults when switching category.
                                 if (!isEditMode) {
-                                    if (name == defaultNameFor(type) || name.isBlank()) {
+                                    if (name == "Monthly Unlimited" || name == "10-Class Pass" || name.isBlank()) {
                                         name = defaultNameFor(option)
                                     }
                                     if (components.size <= 1) {
@@ -271,7 +271,7 @@ private fun PlanFormDialog(
                     label = { Text("Plan Name (e.g. Gold Unlimited, 10-Class Pass)") },
                     singleLine = true
                 )
-                OutlinedTextField(value = priceText, onValueChange = { priceText = it }, label = { Text("Price ($)") }, singleLine = true)
+                OutlinedTextField(value = priceText, onValueChange = { priceText = it }, label = { Text("Price") }, singleLine = true)
 
                 Text("Included Access / Components (${components.size})", style = MaterialTheme.typography.labelLarge)
 

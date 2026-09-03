@@ -249,6 +249,53 @@ struct ClassDetailViewModelTests {
         #expect(viewModel.checkedInCount == 0)
     }
 
+    // MARK: - Proactive plan/credit dimming
+
+    @Test("bookingBlockedReason is nil once loadBookingStatus loads a covering unlimited plan")
+    func bookingBlockedReasonNilWithUnlimitedPlan() async {
+        let (viewModel, mock, gymId) = makeSUT()
+        mock.signedInUID = "member-1"
+        mock.grantUnlimitedForTesting(gymId: gymId, userId: "member-1")
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason == nil)
+    }
+
+    @Test("bookingBlockedReason is \"No active plan\" for a member with no active plans at all")
+    func bookingBlockedReasonNoActivePlan() async {
+        let (viewModel, mock, _) = makeSUT()
+        mock.signedInUID = "member-1"
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason == "No active plan")
+    }
+
+    @Test("bookingBlockedReason is \"No credits remaining\" for a member with a matching but exhausted credit plan")
+    func bookingBlockedReasonNoCreditsRemaining() async {
+        let (viewModel, mock, gymId) = makeSUT()
+        mock.signedInUID = "member-1"
+        let exhaustedItem = ActivePlanItem(
+            id: UUID().uuidString,
+            planName: "10-Class Pass",
+            type: .credits,
+            resetPeriod: .none,
+            workoutType: nil,
+            creditCount: 10,
+            remainingCredits: 0,
+            cycleCreditsUsed: 0,
+            cycleAnchorDate: Date(),
+            lastCycleIndex: 0,
+            expiresAt: Date().addingTimeInterval(86400 * 30)
+        )
+        mock.activePlans[gymId, default: [:]]["member-1", default: [:]][exhaustedItem.id] = exhaustedItem
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason == "No credits remaining")
+    }
+
     @Test("toggleAttendance reverts on backend failure")
     func toggleAttendanceRevertsOnFailure() async throws {
         let (viewModel, mock, gymId) = makeSUT()

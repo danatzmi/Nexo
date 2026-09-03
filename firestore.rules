@@ -64,11 +64,10 @@ service cloud.firestore {
         allow update: if isGymOwner(gymId);
         allow delete: if isUser(uid) || isGymStaff(gymId);
 
-        // Member's Credit Wallet
+        // Member's Credit Wallet (Authoritative Server / Staff Managed)
         match /activePlans/{activePlanId} {
           allow read: if isUser(uid) || isGymStaff(gymId);
-          allow create, delete: if isGymStaff(gymId);
-          allow update: if isGymStaff(gymId) || isUser(uid);
+          allow write: if isGymStaff(gymId);
         }
       }
     }
@@ -91,26 +90,22 @@ service cloud.firestore {
       allow create: if isAuthenticated();
       allow update, delete: if isGymOwner(gymId);
 
-      // Class Schedule
+      // Class Schedule (Authoritative Server / Staff Managed)
       match /classes/{classId} {
-        allow read: if isAuthenticated();
-        allow create, delete: if isGymStaff(gymId);
-        allow update: if isGymStaff(gymId) || isAuthenticated();
+        allow read: if isGymMember(gymId);
+        allow write: if isGymStaff(gymId);
       }
 
-      // Bookings
+      // Bookings (Authoritative Server / Staff Managed)
       match /bookings/{bookingId} {
-        allow read: if isAuthenticated();
-        allow create: if isUser(request.resource.data.userId) || isGymStaff(gymId);
-        allow update: if isGymStaff(gymId) || isUser(resource.data.userId);
-        allow delete: if isUser(resource.data.userId) || isGymStaff(gymId);
+        allow read: if isGymMember(gymId);
+        allow write: if isGymStaff(gymId);
       }
 
-      // Waitlist
+      // Waitlist (Authoritative Server / Staff Managed)
       match /waitlist/{waitlistId} {
-        allow read: if isAuthenticated();
-        allow create: if isUser(request.resource.data.userId) || isGymStaff(gymId);
-        allow delete: if isUser(resource.data.userId) || isGymStaff(gymId);
+        allow read: if isGymMember(gymId);
+        allow write: if isGymStaff(gymId);
       }
 
       // Team (Owners / Coaches)

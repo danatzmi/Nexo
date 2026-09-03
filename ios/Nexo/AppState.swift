@@ -21,11 +21,6 @@ final class AppState {
     /// programmatically. Tags: 0 = Home, 1 = Schedule, 2 = Logbook, 3 = Manage, 4 = Profile.
     var selectedTab: Int = 0
 
-    /// Deep link invite state
-    var pendingInviteGym: Gym?
-    var pendingJoinCode: String?
-    var inviteMessage: String?
-
     /// Was `currentGym!.id`. SwiftUI can evaluate a `.navigationDestination(for:)`
     /// closure speculatively even when the content that would trigger navigation
     /// is otherwise unreachable (e.g. gated behind `if currentGym != nil`) — that
@@ -70,33 +65,12 @@ final class AppState {
         }
     }
 
-    func handleIncomingURL(_ url: URL, backend: BackendService = FirebaseBackend.shared) async {
-        guard let link = DeepLinkParser.parse(url: url) else { return }
-        switch link {
-        case .joinGym(let code):
-            if isAuthenticated {
-                await processJoinCode(code, backend: backend)
-            } else {
-                pendingJoinCode = code
-            }
-        }
-    }
-
-    func processJoinCode(_ code: String, backend: BackendService = FirebaseBackend.shared) async {
-        do {
-            if let gym = try await backend.fetchGymByJoinCode(code: code) {
-                if let existing = myGyms.first(where: { $0.gym.id == gym.id }) {
-                    enter(gym: existing.gym, role: existing.role)
-                    inviteMessage = "Switched to \(gym.name)"
-                } else {
-                    pendingInviteGym = gym
-                }
-            } else {
-                inviteMessage = "No gym found with code \"\(code)\""
-            }
-        } catch {
-            inviteMessage = "Failed to load gym: \(error.localizedDescription)"
-        }
+    /// Re-fetches `myGyms` and auto-selects if it's no longer empty —
+    /// backs the "Check Again" button on `GymPickerView`'s awaiting-
+    /// enrollment screen, for a user whose owner just added them.
+    func refreshMyGyms() async {
+        myGyms = await resolveMyGyms(role: appRole, backend: FirebaseBackend.shared)
+        autoSelectGym()
     }
 
     func signOut() {

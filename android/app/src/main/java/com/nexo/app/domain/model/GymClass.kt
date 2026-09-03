@@ -55,12 +55,6 @@ data class GymClass(
     val formattedCoach: String
         get() = if (coach.isBlank()) "Unassigned" else coach
 
-    /** e.g. "Attendees (8/12)" or "Attendees (12/12 · Waitlist: 2)". */
-    fun formattedAttendeesLabel(): String {
-        val spots = "$currentAttendees/$capacity"
-        return if (isFull && waitlistCount > 0) "Attendees ($spots · Waitlist: $waitlistCount)" else "Attendees ($spots)"
-    }
-
     private companion object {
         val DAY_DATE_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE, dd/MM/yy", Locale.getDefault())
         val TIME_FORMATTER: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault())

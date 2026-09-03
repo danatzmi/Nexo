@@ -215,13 +215,20 @@ struct ClassDetailView: View {
 
     private var attendeesCardTitle: String {
         let spots = "\(gymClass.currentAttendees)/\(gymClass.capacity)"
-        if appState.canManageClasses && !viewModel.attendees.isEmpty {
-            return "Attendees (\(spots) · \(viewModel.checkedInCount) Checked In)"
+        var title = "Attendees: (\(spots))"
+
+        if gymClass.waitlistCount > 0 {
+            let waitlist = viewModel.isWaitlisted
+                ? "\(viewModel.waitlistPosition ?? 0)/\(gymClass.waitlistCount)"
+                : "\(gymClass.waitlistCount)"
+            title += " · Waitlist: (\(waitlist))"
         }
-        if viewModel.isWaitlisted, let position = viewModel.waitlistPosition {
-            return "Attendees (\(spots) · Waitlist: \(position)/\(viewModel.waitlistTotal))"
+
+        if appState.canManageClasses {
+            title += " · Checked In: (\(viewModel.checkedInCount)/\(gymClass.currentAttendees))"
         }
-        return "Attendees (\(spots))"
+
+        return title
     }
 
     private var attendeesCard: some View {
@@ -292,6 +299,12 @@ struct ClassDetailView: View {
 
     // MARK: - Floating Action Button
 
+    /// nil when this member can book (or bypasses the check as staff);
+    /// otherwise the reason shown under a dimmed "Book Class" button.
+    private var bookingBlockedReason: String? {
+        appState.canManageClasses ? nil : viewModel.bookingBlockedReason
+    }
+
     @ViewBuilder
     private var memberActionButton: some View {
         if viewModel.isBooked {
@@ -306,6 +319,14 @@ struct ClassDetailView: View {
             actionCapsule(title: "Join Waitlist", colors: [.orange, .yellow.opacity(0.85)]) {
                 Task { await viewModel.joinWaitlist() }
             }
+        } else if let reason = bookingBlockedReason {
+            VStack(spacing: 6) {
+                capsuleLabel("Book Class", foreground: .white, colors: [.blue, .cyan])
+                    .opacity(0.45)
+                Text(reason)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         } else {
             actionCapsule(title: "Book Class", colors: [.blue, .cyan]) {
                 Task { await viewModel.book() }
@@ -313,16 +334,20 @@ struct ClassDetailView: View {
         }
     }
 
+    private func capsuleLabel(_ title: String, foreground: Color, colors: [Color]) -> some View {
+        Text(title)
+            .fontWeight(.semibold)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 16)
+            .foregroundStyle(foreground)
+            .background(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
+            .clipShape(Capsule())
+            .shadow(color: (colors.first ?? .clear).opacity(0.35), radius: 16, y: 6)
+    }
+
     private func actionCapsule(title: String, colors: [Color], foreground: Color = .white, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(title)
-                .fontWeight(.semibold)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 16)
-                .foregroundStyle(foreground)
-                .background(LinearGradient(colors: colors, startPoint: .leading, endPoint: .trailing))
-                .clipShape(Capsule())
-                .shadow(color: (colors.first ?? .clear).opacity(0.35), radius: 16, y: 6)
+            capsuleLabel(title, foreground: foreground, colors: colors)
         }
         .buttonStyle(.plain)
     }

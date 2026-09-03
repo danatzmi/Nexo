@@ -14,6 +14,14 @@ final class ScheduleViewModel {
     var classes: [GymClass] = []
     var bookedClassIds: Set<UUID> = []
     var waitlistedClassIds: Set<UUID> = []
+    /// The signed-in user's position in a given class's waitlist — populated
+    /// per-row by `loadRowDetails(for:canManage:)` as each `ClassRow` appears,
+    /// rather than upfront for the whole day (mirrors `ClassDetailViewModel`'s
+    /// same fetch, just scoped to one row instead of one screen).
+    var waitlistPositions: [UUID: Int] = [:]
+    /// Checked-in attendee count per class, staff-only — same per-row
+    /// loading rationale as `waitlistPositions`.
+    var checkedInCounts: [UUID: Int] = [:]
     var isLoading = false
     var errorMessage: String?
     var selectedDate: Date = .now
@@ -30,6 +38,14 @@ final class ScheduleViewModel {
     /// kept as a separate property so the view can tell the two outcomes apart
     /// and show the right title/icon.
     var waitlistSuccessMessage: String?
+    /// This member's active wallet items for this gym — loaded once
+    /// alongside booking/waitlist status, used by `bookingBlockedReason(for:)`
+    /// to proactively dim the Book button before a doomed attempt is even
+    /// made. Owners/Coaches/Platform Admins bypass this check entirely (the
+    /// view skips calling `bookingBlockedReason` for them via
+    /// `appState.canManageClasses`), so it doesn't matter that this is
+    /// fetched for them too.
+    var activePlans: [ActivePlanItem] = []
 
     private var stopListener: (() -> Void)?
 
@@ -65,6 +81,22 @@ final class ScheduleViewModel {
         } catch {
             errorMessage = "Error loading bookings: \(error.localizedDescription)"
         }
+        if let uid = backend.currentUID() {
+            activePlans = (try? await backend.fetchActivePlans(gymId: gymId, userId: uid)) ?? []
+        }
+    }
+
+    /// nil when this member has an active plan/credit balance covering
+    /// `gymClass` (or when the caller bypasses this check — gated via
+    /// `appState.canManageClasses`); otherwise a short reason to show in
+    /// place of a dimmed Book button. Mirrors
+    /// `ClassDetailViewModel.bookingBlockedReason`.
+    func bookingBlockedReason(for gymClass: GymClass) -> String? {
+        let matching = activePlans.filter { $0.matches(gymClass: gymClass) }
+        if matching.contains(where: { $0.type == .unlimited || $0.availableCredits() > 0 }) {
+            return nil
+        }
+        return matching.isEmpty ? "No active plan" : "No credits remaining"
     }
 
     func startObserving() {
@@ -77,6 +109,24 @@ final class ScheduleViewModel {
     func stopObserving() {
         stopListener?()
         stopListener = nil
+    }
+
+    /// Fetches this row's waitlist position (if the user is waitlisted for
+    /// it) and checked-in count (if [canManage]) — called from `ClassRow`'s
+    /// `.task(id:)` as each row appears, so the Schedule list can show the
+    /// same "Attendees: (x/y) · Waitlist: (...) · Checked In: (...)" text as
+    /// `ClassDetailView` without fetching this for every class up front.
+    func loadRowDetails(for gymClass: GymClass, canManage: Bool) async {
+        if waitlistedClassIds.contains(gymClass.id) {
+            if let result = (try? await backend.fetchWaitlistPosition(gymId: gymId, classId: gymClass.id)) ?? nil {
+                waitlistPositions[gymClass.id] = result.position
+            }
+        }
+        if canManage {
+            if let attendees = try? await backend.fetchAttendees(gymId: gymId, classId: gymClass.id) {
+                checkedInCounts[gymClass.id] = attendees.filter { $0.isCheckedIn }.count
+            }
+        }
     }
 
     // MARK: - Actions
@@ -102,10 +152,9 @@ final class ScheduleViewModel {
     func bookClass(_ gymClass: GymClass) async {
         guard guardNotPast(gymClass) else { return }
 
-        // Optimistic update — the popup fires here too, in step with the rest
-        // of the optimistic state, instead of waiting on the network round-trip
-        // below. The card supplies its own "Booked!" heading, so this is just
-        // the supporting subtitle (class type + time), not a full sentence.
+        // Optimistic update
+        let previousPlans = activePlans
+        activePlans = consumeCreditLocally(activePlans, for: gymClass)
         bookedClassIds.insert(gymClass.id)
         updateLocalClass(gymClass.id) { $0.currentAttendees += 1 }
         bookingSuccessMessage = "\(gymClass.title) · \(gymClass.formattedTime)"
@@ -114,6 +163,7 @@ final class ScheduleViewModel {
             try await backend.book(gymId: gymId, classId: gymClass.id)
         } catch {
             // Revert on failure
+            activePlans = previousPlans
             bookedClassIds.remove(gymClass.id)
             updateLocalClass(gymClass.id) { $0.currentAttendees = max(0, $0.currentAttendees - 1) }
             bookingSuccessMessage = nil
@@ -125,6 +175,8 @@ final class ScheduleViewModel {
         guard guardNotPast(gymClass) else { return }
 
         // Optimistic update
+        let previousPlans = activePlans
+        activePlans = refundCreditLocally(activePlans, for: gymClass)
         bookedClassIds.remove(gymClass.id)
         updateLocalClass(gymClass.id) { $0.currentAttendees = max(0, $0.currentAttendees - 1) }
 
@@ -132,6 +184,7 @@ final class ScheduleViewModel {
             try await backend.cancelBooking(gymId: gymId, classId: gymClass.id)
         } catch {
             // Revert on failure
+            activePlans = previousPlans
             bookedClassIds.insert(gymClass.id)
             updateLocalClass(gymClass.id) { $0.currentAttendees += 1 }
             bookingMessage = "Failed to cancel: \(error.localizedDescription)"
@@ -141,7 +194,7 @@ final class ScheduleViewModel {
     func joinWaitlist(_ gymClass: GymClass) async {
         guard guardNotPast(gymClass) else { return }
 
-        // Optimistic update — same pattern as `bookClass`.
+        // Optimistic update
         waitlistedClassIds.insert(gymClass.id)
         updateLocalClass(gymClass.id) { $0.waitlistCount += 1 }
         waitlistSuccessMessage = "\(gymClass.title) · \(gymClass.formattedTime)"
@@ -174,4 +227,33 @@ final class ScheduleViewModel {
         }
     }
 
+    private func consumeCreditLocally(_ plans: [ActivePlanItem], for gymClass: GymClass) -> [ActivePlanItem] {
+        if plans.contains(where: { $0.matches(gymClass: gymClass) && $0.type == .unlimited }) { return plans }
+        var list = plans
+        if let targetIndex = list.firstIndex(where: { $0.matches(gymClass: gymClass) && $0.type == .credits && $0.availableCredits() > 0 }) {
+            var item = list[targetIndex]
+            if item.resetPeriod == .monthly {
+                item.cycleCreditsUsed += 1
+            } else {
+                item.remainingCredits = max(0, item.remainingCredits - 1)
+            }
+            list[targetIndex] = item
+        }
+        return list
+    }
+
+    private func refundCreditLocally(_ plans: [ActivePlanItem], for gymClass: GymClass) -> [ActivePlanItem] {
+        if plans.contains(where: { $0.matches(gymClass: gymClass) && $0.type == .unlimited }) { return plans }
+        var list = plans
+        if let targetIndex = list.firstIndex(where: { $0.matches(gymClass: gymClass) && $0.type == .credits }) {
+            var item = list[targetIndex]
+            if item.resetPeriod == .monthly {
+                item.cycleCreditsUsed = max(0, item.cycleCreditsUsed - 1)
+            } else {
+                item.remainingCredits += 1
+            }
+            list[targetIndex] = item
+        }
+        return list
+    }
 }

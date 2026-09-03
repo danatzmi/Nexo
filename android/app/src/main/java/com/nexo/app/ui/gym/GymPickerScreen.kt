@@ -1,28 +1,26 @@
 package com.nexo.app.ui.gym
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.DirectionsRun
-import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Business
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -34,78 +32,82 @@ import androidx.compose.ui.unit.dp
 import com.nexo.app.data.repository.BackendRepository
 
 /**
- * Shown when the signed-in user has no gym memberships — the "2-Option
- * Onboarding Hub", mirroring iOS's `GymPickerView.welcomeOnboardingView`.
+ * Shown when the signed-in user has no gym memberships — there's no
+ * self-serve gym creation or public join directory (see FEEDBACK.md's
+ * "Owner-Driven Membership" model), so this is purely a waiting screen
+ * until a gym owner adds this user by email. [onRefresh] re-triggers
+ * [com.nexo.app.ui.SessionViewModel.refresh], which flips to a full-screen
+ * loading state immediately and swaps this screen out for the normal app
+ * shell once the owner's addition is picked up — no local loading state
+ * needed here. Mirrors iOS's `GymPickerView.awaitingEnrollmentView`.
  */
 @Composable
-fun GymPickerScreen(repository: BackendRepository, onGymEntered: (String) -> Unit, onSignOut: () -> Unit) {
-    var showJoinGym by remember { mutableStateOf(false) }
-    var showCreateGym by remember { mutableStateOf(false) }
+fun GymPickerScreen(repository: BackendRepository, onRefresh: () -> Unit, onSignOut: () -> Unit) {
+    var userEmail by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-        Spacer(Modifier.height(32.dp))
-        Text("Welcome to Nexo", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
+    LaunchedEffect(Unit) {
+        userEmail = try { repository.fetchMyProfile()?.email.orEmpty() } catch (e: Exception) { "" }
+    }
+
+    Column(
+        Modifier.fillMaxSize().padding(24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
+            Box(Modifier.size(80.dp), contentAlignment = Alignment.Center) {
+                Icon(
+                    Icons.Filled.HourglassEmpty,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(34.dp)
+                )
+            }
+        }
+        Spacer(Modifier.height(20.dp))
+
+        Text("Welcome to Nexo!", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
         Text(
-            "Choose how you'd like to get started:",
+            "You haven't been added to a gym yet.",
             style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp)
         )
+
+        if (userEmail.isNotEmpty()) {
+            Text(
+                "Ask your gym owner to add you using your email:",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 16.dp)
+            )
+            Surface(
+                shape = RoundedCornerShape(10.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                modifier = Modifier.padding(top = 8.dp)
+            ) {
+                Text(
+                    userEmail,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp)
+                )
+            }
+        }
+
         Spacer(Modifier.height(28.dp))
 
-        OnboardingChoiceCard(
-            icon = Icons.AutoMirrored.Filled.DirectionsRun,
-            title = "I am a Gym Member",
-            description = "Find your gym, book classes, and track your daily workouts.",
-            onClick = { showJoinGym = true }
-        )
-        Spacer(Modifier.height(16.dp))
-        OnboardingChoiceCard(
-            icon = Icons.Filled.Business,
-            title = "I am a Gym Owner",
-            description = "Set up a new gym, schedule classes, and manage your members.",
-            onClick = { showCreateGym = true }
-        )
+        Button(
+            onClick = onRefresh,
+            modifier = Modifier.width(220.dp).height(48.dp)
+        ) {
+            Text("Check Again")
+        }
 
-        Spacer(Modifier.height(24.dp))
-        TextButton(onClick = onSignOut) { Text("Sign Out") }
-    }
+        Spacer(Modifier.height(12.dp))
 
-    if (showJoinGym) {
-        JoinGymSheet(
-            repository = repository,
-            onDismiss = { showJoinGym = false },
-            onJoined = { gymId ->
-                showJoinGym = false
-                onGymEntered(gymId)
-            }
-        )
-    }
-    if (showCreateGym) {
-        CreateGymSheet(
-            repository = repository,
-            onDismiss = { showCreateGym = false },
-            onEnterDashboard = { gymId ->
-                showCreateGym = false
-                onGymEntered(gymId)
-            }
-        )
-    }
-}
-
-@Composable
-private fun OnboardingChoiceCard(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, description: String, onClick: () -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Row(Modifier.fillMaxWidth().padding(18.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            Surface(shape = RoundedCornerShape(14.dp), color = MaterialTheme.colorScheme.primaryContainer) {
-                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-                    Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer, modifier = Modifier.size(28.dp))
-                }
-            }
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium)
-                Text(description, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        TextButton(onClick = onSignOut) {
+            Text("Sign Out")
         }
     }
 }

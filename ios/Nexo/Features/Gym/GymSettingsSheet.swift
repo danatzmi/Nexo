@@ -42,38 +42,6 @@ struct GymSettingsSheet: View {
                         .autocorrectionDisabled()
                 }
 
-                if let code = gym.joinCode, !code.isEmpty {
-                    Section("Member Onboarding") {
-                        HStack {
-                            Text("Join Code")
-                                .font(.subheadline)
-                            Spacer()
-                            Text(code)
-                                .font(.system(.subheadline, design: .monospaced, weight: .bold))
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 4)
-                                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
-                                .foregroundStyle(Color.accentColor)
-                        }
-
-                        Button {
-                            UIPasteboard.general.string = code
-                        } label: {
-                            Label("Copy Join Code", systemImage: "doc.on.doc")
-                        }
-
-                        if let inviteURL = URL(string: "https://nexo.fit/join/\(code)") {
-                            ShareLink(
-                                item: inviteURL,
-                                subject: Text("Join \(gym.name) on Nexo"),
-                                message: Text("Join our gym on Nexo! Download the app and use join code: \(code) or tap:")
-                            ) {
-                                Label("Share Invite Link", systemImage: "square.and.arrow.up")
-                            }
-                        }
-                    }
-                }
-
                 Section("Class Types") {
                     ForEach(workoutTypes, id: \.self) { category in
                         Label(category, systemImage: category.categoryIcon)
@@ -138,7 +106,7 @@ struct GymSettingsSheet: View {
 
         do {
             try await FirebaseBackend.shared.updateGymSettings(gymId: gym.id, name: trimmedName, workoutTypes: workoutTypes)
-            let updatedGym = Gym(id: gym.id, name: trimmedName, ownerUID: gym.ownerUID, workoutTypes: workoutTypes)
+            let updatedGym = Gym(id: gym.id, name: trimmedName, ownerUID: gym.ownerUID, workoutTypes: workoutTypes, city: gym.city)
             if appState.currentGym?.id == gym.id {
                 appState.currentGym = updatedGym
             }

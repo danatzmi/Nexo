@@ -34,15 +34,12 @@ protocol BackendService {
 
     // MARK: - Gyms
     func fetchMyGyms() async throws -> [(gym: Gym, role: UserRole)]
+    /// Every gym on the platform — used by the Platform Dashboard's gym list.
     func fetchAvailableGyms() async throws -> [Gym]
-    func createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym
-    /// Creates a new gym owned by the currently signed-in user, with an optional custom join code and city.
-    func createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: [String]) async throws -> Gym
-    func joinGym(gymId: UUID) async throws
-    /// Resolves a 6-character join code (e.g. "IRON99") and attaches the signed-in user as a member.
-    func joinGymByCode(code: String) async throws -> Gym
-    /// Looks up gym details by join code without joining yet, for the live confirmation preview card.
-    func fetchGymByJoinCode(code: String) async throws -> Gym?
+    /// The only way a gym gets created: Platform-admin-only, assigning the
+    /// owner by email — reuses an existing platform user if the email
+    /// matches one, otherwise registers a new Auth account for them.
+    func createGym(name: String, city: String?, workoutTypes: [String], ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym
     /// Attaches an existing platform user (found via `fetchAllUsers()`) to a
     /// gym with the given role, without registering a new Auth account —
     /// the counterpart to `addMember`/`addTeamMember`'s "brand-new account"

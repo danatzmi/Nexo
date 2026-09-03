@@ -1,7 +1,5 @@
 package com.nexo.app.ui.gym
 
-import android.content.ClipData
-import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,7 +21,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,15 +41,11 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ClipEntry
-import androidx.compose.ui.platform.LocalClipboard
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -60,9 +53,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.nexo.app.data.repository.BackendRepository
-import kotlinx.coroutines.launch
 
-/** The self-serve "I am a Gym Owner" onboarding wizard + success/share modal — mirrors iOS's `CreateGymView` + `GymCreatedSuccessSheet`. */
+/** Platform-Admin-only "Create a Gym" form + success modal — mirrors iOS's `CreateGymView` + `GymCreatedSuccessSheet`. Assigns the owner by email; there is no self-serve creation path. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CreateGymSheet(
@@ -87,7 +79,6 @@ fun CreateGymSheet(
     if (createdGym != null) {
         GymCreatedSuccessDialog(
             gymName = createdGym.name,
-            joinCode = createdGym.joinCode.orEmpty(),
             onEnterDashboard = { onEnterDashboard(createdGym.id) }
         )
         return
@@ -97,7 +88,7 @@ fun CreateGymSheet(
         Scaffold(
             topBar = {
                 TopAppBar(
-                    title = { Text("Set Up Your Gym") },
+                    title = { Text("Create a Gym") },
                     navigationIcon = { TextButton(onClick = onDismiss) { Text("Cancel") } }
                 )
             },
@@ -123,26 +114,9 @@ fun CreateGymSheet(
                 )
 
                 Column {
-                    OutlinedTextField(
-                        value = uiState.customJoinCode,
-                        onValueChange = viewModel::updateCustomJoinCode,
-                        label = { Text("Member Join Code (Optional)") },
-                        placeholder = { Text("e.g. IRON99") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Leave blank to auto-generate from gym name. Members use this code or your invite link to join.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Column {
                     Text("Select Workout Categories", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text(
-                        "Tap the categories your gym offers:",
+                        "Tap the categories this gym offers:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -159,6 +133,46 @@ fun CreateGymSheet(
                     }
                 }
 
+                Column {
+                    Text("Assign Owner", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(8.dp))
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedTextField(
+                            value = uiState.ownerFirstName,
+                            onValueChange = viewModel::updateOwnerFirstName,
+                            label = { Text("First Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = uiState.ownerLastName,
+                            onValueChange = viewModel::updateOwnerLastName,
+                            label = { Text("Last Name") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = uiState.ownerEmail,
+                            onValueChange = viewModel::updateOwnerEmail,
+                            label = { Text("Owner Email") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        OutlinedTextField(
+                            value = uiState.ownerPassword,
+                            onValueChange = viewModel::updateOwnerPassword,
+                            label = { Text("Password") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            "If this email already belongs to a Nexo user, they become the owner — no duplicate account is created.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
                 Button(
                     onClick = viewModel::createGym,
                     enabled = uiState.isValid,
@@ -167,7 +181,7 @@ fun CreateGymSheet(
                     if (uiState.isSaving) {
                         CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp, color = MaterialTheme.colorScheme.onPrimary)
                     } else {
-                        Text("Create & Launch Gym", fontWeight = FontWeight.SemiBold)
+                        Text("Create & Assign Owner", fontWeight = FontWeight.SemiBold)
                     }
                 }
             }
@@ -228,12 +242,7 @@ private fun CategoryChipsGrid(categories: List<String>, selected: Set<String>, o
 }
 
 @Composable
-private fun GymCreatedSuccessDialog(gymName: String, joinCode: String, onEnterDashboard: () -> Unit) {
-    val context = LocalContext.current
-    val clipboard = LocalClipboard.current
-    val scope = rememberCoroutineScope()
-    var copied by remember { mutableStateOf(false) }
-
+private fun GymCreatedSuccessDialog(gymName: String, onEnterDashboard: () -> Unit) {
     Dialog(onDismissRequest = onEnterDashboard, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Surface(modifier = Modifier.fillMaxSize()) {
             Column(
@@ -253,64 +262,22 @@ private fun GymCreatedSuccessDialog(gymName: String, joinCode: String, onEnterDa
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(gymName, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Your gym is live and ready!", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(24.dp))
-
-                Surface(
-                    shape = RoundedCornerShape(16.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Column(Modifier.padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            "MEMBER JOIN CODE",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text(
-                            text = joinCode,
-                            style = MaterialTheme.typography.displaySmall,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Black
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        TextButton(onClick = {
-                            scope.launch {
-                                clipboard.setClipEntry(ClipEntry(ClipData.newPlainText("Join Code", joinCode)))
-                                copied = true
-                            }
-                        }) {
-                            Text(if (copied) "Copied to Clipboard!" else "Copy Join Code")
-                        }
-                    }
-                }
+                Text(
+                    "Gym created and owner assigned. It's live now.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(horizontal = 16.dp)
+                )
                 Spacer(Modifier.height(24.dp))
 
                 Button(
-                    onClick = {
-                        val shareIntent = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_SUBJECT, "Join $gymName on Nexo")
-                            putExtra(
-                                Intent.EXTRA_TEXT,
-                                "Join our gym on Nexo! Download the app and use join code: $joinCode or tap the link: https://nexo.fit/join/$joinCode"
-                            )
-                        }
-                        context.startActivity(Intent.createChooser(shareIntent, "Share Invite"))
-                    },
+                    onClick = onEnterDashboard,
                     modifier = Modifier.fillMaxWidth().height(52.dp)
                 ) {
-                    Icon(Icons.Filled.Share, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.size(8.dp))
-                    Text("Share Invite Link", fontWeight = FontWeight.SemiBold)
-                }
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onEnterDashboard) {
-                    Text("Enter Gym Dashboard", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Continue", fontWeight = FontWeight.SemiBold)
                 }
             }
         }
     }
 }
-

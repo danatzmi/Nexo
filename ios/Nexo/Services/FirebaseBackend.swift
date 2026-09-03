@@ -9,6 +9,7 @@ import Foundation
 import FirebaseCore
 import FirebaseAuth
 import FirebaseFirestore
+import FirebaseFunctions
 
 enum FBError: Error, LocalizedError {
     case notAuthenticated
@@ -19,8 +20,6 @@ enum FBError: Error, LocalizedError {
     case noActiveMembership
     case insufficientCredits
     case classInPast
-    case gymNotFound
-    case invalidJoinCode
     case unknown
 
     var errorDescription: String? {
@@ -33,8 +32,6 @@ enum FBError: Error, LocalizedError {
         case .noActiveMembership: return "No active membership. Please contact your gym to purchase a plan."
         case .insufficientCredits: return "Insufficient credits. Please contact your gym to purchase more."
         case .classInPast: return "Cannot book or join waitlist for a class that has already started."
-        case .gymNotFound: return "Gym not found. Please check the code or search again."
-        case .invalidJoinCode: return "Invalid gym join code. Please enter a valid 6-character code."
         case .unknown: return "Unknown error."
         }
     }
@@ -46,6 +43,7 @@ final class FirebaseBackend: BackendService {
 
     private let auth = Auth.auth()
     private let db = Firestore.firestore()
+    private lazy var functions = Functions.functions(region: "us-central1")
 
     private init() {}
 
@@ -174,10 +172,9 @@ final class FirebaseBackend: BackendService {
                   let gymName = gymData["name"] as? String,
                   let ownerUID = gymData["ownerUID"] as? String else { continue }
             let workoutTypes = gymData["workoutTypes"] as? [String] ?? WorkoutCategory.defaults
-            let joinCode = gymData["joinCode"] as? String
             let city = gymData["city"] as? String
 
-            results.append((gym: Gym(id: gymId, name: gymName, ownerUID: ownerUID, workoutTypes: workoutTypes, joinCode: joinCode, city: city), role: role))
+            results.append((gym: Gym(id: gymId, name: gymName, ownerUID: ownerUID, workoutTypes: workoutTypes, city: city), role: role))
         }
 
         return results
@@ -191,27 +188,12 @@ final class FirebaseBackend: BackendService {
                   let ownerUID = doc.data()["ownerUID"] as? String,
                   let id = UUID(uuidString: doc.documentID) else { return nil }
             let workoutTypes = doc.data()["workoutTypes"] as? [String] ?? WorkoutCategory.defaults
-            let joinCode = doc.data()["joinCode"] as? String
             let city = doc.data()["city"] as? String
-            return Gym(id: id, name: name, ownerUID: ownerUID, workoutTypes: workoutTypes, joinCode: joinCode, city: city)
+            return Gym(id: id, name: name, ownerUID: ownerUID, workoutTypes: workoutTypes, city: city)
         }
     }
 
-    private func sanitizeOrGenerateJoinCode(desiredCode: String?, gymName: String) -> String {
-        if let desired = desiredCode?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased(),
-           !desired.isEmpty {
-            let filtered = desired.filter { $0.isLetter || $0.isNumber }
-            if !filtered.isEmpty {
-                return String(filtered.prefix(8))
-            }
-        }
-        let prefix = gymName.filter { $0.isLetter }.uppercased().prefix(4)
-        let cleanPrefix = prefix.isEmpty ? "GYM" : prefix
-        let randomNum = Int.random(in: 10...99)
-        return "\(cleanPrefix)\(randomNum)"
-    }
-
-    func createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym {
+    func createGym(name: String, city: String?, workoutTypes: [String], ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String) async throws -> Gym {
         guard currentUID() != nil else { throw FBError.notAuthenticated }
 
         let ownerUID: String
@@ -238,22 +220,21 @@ final class FirebaseBackend: BackendService {
             resolvedLastName = ownerLastName
         }
 
-        let code = sanitizeOrGenerateJoinCode(desiredCode: nil, gymName: name)
-        let gym = Gym(name: name, ownerUID: ownerUID, joinCode: code)
+        let resolvedWorkoutTypes = workoutTypes.isEmpty ? WorkoutCategory.defaults : workoutTypes
+        let trimmedCity = city?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let gym = Gym(name: name, ownerUID: ownerUID, workoutTypes: resolvedWorkoutTypes, city: (trimmedCity?.isEmpty ?? true) ? nil : trimmedCity)
 
-        try await db.collection("gyms").document(gym.id.uuidString).setData([
+        var gymData: [String: Any] = [
             "name": gym.name,
             "ownerUID": ownerUID,
             "workoutTypes": gym.workoutTypes,
-            "joinCode": code,
             "createdAt": Timestamp(date: Date())
-        ])
+        ]
+        if let city = gym.city {
+            gymData["city"] = city
+        }
 
-        try await db.collection("gymCodes").document(code).setData([
-            "gymId": gym.id.uuidString,
-            "gymName": gym.name,
-            "createdAt": Timestamp(date: Date())
-        ])
+        try await db.collection("gyms").document(gym.id.uuidString).setData(gymData)
 
         try await db.collection("users").document(ownerUID)
             .collection("memberships").document(gym.id.uuidString).setData([
@@ -269,91 +250,6 @@ final class FirebaseBackend: BackendService {
             "addedAt": Timestamp(date: Date())
         ])
 
-        return gym
-    }
-
-    func createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: [String]) async throws -> Gym {
-        guard let uid = currentUID() else { throw FBError.notAuthenticated }
-
-        let userDoc = try await db.collection("users").document(uid).getDocument()
-        let userData = userDoc.data() ?? [:]
-        let firstName = userData["firstName"] as? String ?? ""
-        let lastName = userData["lastName"] as? String ?? ""
-        let email = userData["email"] as? String ?? ""
-
-        let code = sanitizeOrGenerateJoinCode(desiredCode: joinCode, gymName: name)
-        let resolvedWorkoutTypes = workoutTypes.isEmpty ? WorkoutCategory.defaults : workoutTypes
-
-        let gym = Gym(name: name, ownerUID: uid, workoutTypes: resolvedWorkoutTypes, joinCode: code, city: city)
-
-        var gymData: [String: Any] = [
-            "name": gym.name,
-            "ownerUID": uid,
-            "workoutTypes": gym.workoutTypes,
-            "joinCode": code,
-            "createdAt": Timestamp(date: Date())
-        ]
-        if let city = city?.trimmingCharacters(in: .whitespacesAndNewlines), !city.isEmpty {
-            gymData["city"] = city
-        }
-
-        try await db.collection("gyms").document(gym.id.uuidString).setData(gymData)
-
-        try await db.collection("gymCodes").document(code).setData([
-            "gymId": gym.id.uuidString,
-            "gymName": gym.name,
-            "createdAt": Timestamp(date: Date())
-        ])
-
-        try await db.collection("users").document(uid)
-            .collection("memberships").document(gym.id.uuidString).setData([
-                "role": UserRole.owner.rawValue,
-                "joinedAt": Timestamp(date: Date())
-            ])
-
-        try await teamRef(gym.id).document(uid).setData([
-            "role": UserRole.owner.rawValue,
-            "firstName": firstName,
-            "lastName": lastName,
-            "email": email,
-            "addedAt": Timestamp(date: Date())
-        ])
-
-        return gym
-    }
-
-    func fetchGymByJoinCode(code: String) async throws -> Gym? {
-        let cleanCode = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-        guard !cleanCode.isEmpty else { return nil }
-
-        let codeDoc = try await db.collection("gymCodes").document(cleanCode).getDocument()
-        if let data = codeDoc.data(), let gymIdStr = data["gymId"] as? String, let gymUUID = UUID(uuidString: gymIdStr) {
-            let gymDoc = try await db.collection("gyms").document(gymIdStr).getDocument()
-            if let gData = gymDoc.data(), let name = gData["name"] as? String, let ownerUID = gData["ownerUID"] as? String {
-                let workoutTypes = gData["workoutTypes"] as? [String] ?? WorkoutCategory.defaults
-                let city = gData["city"] as? String
-                return Gym(id: gymUUID, name: name, ownerUID: ownerUID, workoutTypes: workoutTypes, joinCode: cleanCode, city: city)
-            }
-        }
-
-        let querySnap = try await db.collection("gyms").whereField("joinCode", isEqualTo: cleanCode).getDocuments()
-        if let doc = querySnap.documents.first,
-           let name = doc.data()["name"] as? String,
-           let ownerUID = doc.data()["ownerUID"] as? String,
-           let id = UUID(uuidString: doc.documentID) {
-            let workoutTypes = doc.data()["workoutTypes"] as? [String] ?? WorkoutCategory.defaults
-            let city = doc.data()["city"] as? String
-            return Gym(id: id, name: name, ownerUID: ownerUID, workoutTypes: workoutTypes, joinCode: cleanCode, city: city)
-        }
-
-        return nil
-    }
-
-    func joinGymByCode(code: String) async throws -> Gym {
-        guard let gym = try await fetchGymByJoinCode(code: code) else {
-            throw FBError.gymNotFound
-        }
-        try await joinGym(gymId: gym.id)
         return gym
     }
 
@@ -408,29 +304,6 @@ final class FirebaseBackend: BackendService {
     func removeTeamMember(gymId: UUID, userId: String) async throws {
         try await membershipRef(gymId: gymId, userId: userId).delete()
         try await teamRef(gymId).document(userId).delete()
-    }
-
-    func joinGym(gymId: UUID) async throws {
-        guard let uid = currentUID() else { throw FBError.notAuthenticated }
-
-        let joinedAt = Timestamp(date: Date())
-
-        try await db.collection("users").document(uid)
-            .collection("memberships").document(gymId.uuidString).setData([
-                "role": UserRole.member.rawValue,
-                "joinedAt": joinedAt
-            ])
-
-        let userDoc = try await db.collection("users").document(uid).getDocument()
-        let userData = userDoc.data() ?? [:]
-
-        try await membersRef(gymId).document(uid).setData([
-            "firstName": userData["firstName"] as? String ?? "",
-            "lastName": userData["lastName"] as? String ?? "",
-            "email": userData["email"] as? String ?? "",
-            "role": UserRole.member.rawValue,
-            "joinedAt": joinedAt
-        ])
     }
 
     func addExistingUserToGym(gymId: UUID, userId: String, role: UserRole) async throws {
@@ -679,186 +552,105 @@ final class FirebaseBackend: BackendService {
         }
     }
 
+    // MARK: - Booking & Concurrency (Authoritative Cloud Functions)
+
     func book(gymId: UUID, classId: UUID) async throws {
-        guard let uid = currentUID() else { throw FBError.notAuthenticated }
-
-        let existing = try await bookingsRef(gymId)
-            .whereField("userId", isEqualTo: uid)
-            .whereField("classId", isEqualTo: classId.uuidString)
-            .getDocuments()
-
-        guard existing.documents.isEmpty else { return }
-
-        let classDoc = try await classesRef(gymId).document(classId.uuidString).getDocument()
-        guard let gymClass = parseClass(from: classDoc) else { throw FBError.classNotFound }
-        guard gymClass.startTime >= Date() else { throw FBError.classInPast }
-        guard gymClass.currentAttendees < gymClass.capacity else { throw FBError.classFull }
-
-        let consumedActivePlanId = try await validateAndConsumeMembership(gymId: gymId, userId: uid, gymClass: gymClass)
-
-        var bookingData: [String: Any] = [
-            "userId": uid,
-            "classId": classId.uuidString,
-            "bookedAt": Timestamp(date: Date())
-        ]
-        if let consumedActivePlanId {
-            bookingData["activePlanId"] = consumedActivePlanId
+        guard currentUID() != nil else { throw FBError.notAuthenticated }
+        do {
+            _ = try await functions.httpsCallable("bookClass").call([
+                "gymId": gymId.uuidString,
+                "classId": classId.uuidString
+            ])
+        } catch {
+            throw parseFunctionsError(error)
         }
-        _ = try await bookingsRef(gymId).addDocument(data: bookingData)
-
-        try await adjustClassCounter(gymId: gymId, classId: classId, field: "currentAttendees", by: 1)
-    }
-
-    /// Enforces the member's plan wallet before a booking is created. Returns the
-    /// `ActivePlanItem` id consumed (so it can be refunded on cancel), or nil if an
-    /// unlimited plan authorized it (nothing to refund) or the caller is staff.
-    /// Owners/coaches bypass this entirely — `role` governs their access, not a
-    /// purchased plan.
-    private func validateAndConsumeMembership(gymId: UUID, userId: String, gymClass: GymClass) async throws -> String? {
-        let snapshot = try await activePlansRef(gymId: gymId, userId: userId).getDocuments()
-        let matching = snapshot.documents.compactMap { activePlanItem(from: $0) }.filter { $0.matches(gymClass: gymClass) }
-
-        // If the user has any matching unexpired plans, enforce the credit wallet:
-        if !matching.isEmpty {
-            if matching.contains(where: { $0.type == .unlimited }) {
-                return nil
-            }
-
-            let creditItems = matching.filter { $0.type == .credits && $0.availableCredits() > 0 }.sorted { $0.expiresAt < $1.expiresAt }
-            guard let chosen = creditItems.first else {
-                throw FBError.insufficientCredits
-            }
-
-            let docRef = activePlansRef(gymId: gymId, userId: userId).document(chosen.id)
-            if chosen.resetPeriod == .monthly {
-                let currentIndex = chosen.currentCycleIndex()
-                if currentIndex != chosen.lastCycleIndex {
-                    try await docRef.updateData(["cycleCreditsUsed": 1, "lastCycleIndex": currentIndex])
-                } else {
-                    try await docRef.updateData(["cycleCreditsUsed": FieldValue.increment(Int64(1))])
-                }
-            } else {
-                try await docRef.updateData(["remainingCredits": FieldValue.increment(Int64(-1))])
-            }
-
-            return chosen.id
-        }
-
-        // If user has no active plans: platform admins and staff bypass wallet requirements
-        let userData = try await db.collection("users").document(userId).getDocument().data() ?? [:]
-        let platformRole = PlatformRole(rawValue: userData["role"] as? String ?? "") ?? .user
-        if platformRole == .admin { return nil }
-
-        let membershipData = try await membershipRef(gymId: gymId, userId: userId).getDocument().data() ?? [:]
-        let role = UserRole(rawValue: membershipData["role"] as? String ?? "") ?? .member
-        if role.canManageClasses { return nil }
-
-        throw FBError.noActiveMembership
     }
 
     func cancelBooking(gymId: UUID, classId: UUID) async throws {
         guard let uid = currentUID() else { throw FBError.notAuthenticated }
-        try await removeBooking(gymId: gymId, classId: classId, userId: uid)
+        let snapshot = try await bookingsRef(gymId)
+            .whereField("userId", isEqualTo: uid)
+            .whereField("classId", isEqualTo: classId.uuidString)
+            .getDocuments()
+        guard let bookingDoc = snapshot.documents.first else { throw FBError.bookingNotFound }
+
+        do {
+            _ = try await functions.httpsCallable("cancelBooking").call([
+                "gymId": gymId.uuidString,
+                "classId": classId.uuidString,
+                "bookingId": bookingDoc.documentID
+            ])
+        } catch {
+            throw parseFunctionsError(error)
+        }
     }
 
     func cancelBooking(gymId: UUID, classId: UUID, onBehalfOf userId: String) async throws {
-        try await removeBooking(gymId: gymId, classId: classId, userId: userId)
-    }
-
-    private func removeBooking(gymId: UUID, classId: UUID, userId: String) async throws {
-        let bookings = try await bookingsRef(gymId)
+        let snapshot = try await bookingsRef(gymId)
             .whereField("userId", isEqualTo: userId)
             .whereField("classId", isEqualTo: classId.uuidString)
             .getDocuments()
+        guard let bookingDoc = snapshot.documents.first else { throw FBError.bookingNotFound }
 
-        guard !bookings.documents.isEmpty else { return }
-
-        let consumedActivePlanIds = bookings.documents.compactMap { $0.data()["activePlanId"] as? String }
-
-        for doc in bookings.documents {
-            try await doc.reference.delete()
-        }
-
-        for activePlanId in consumedActivePlanIds {
-            let ref = activePlansRef(gymId: gymId, userId: userId).document(activePlanId)
-            let data = try await ref.getDocument().data() ?? [:]
-            if (data["type"] as? String) == PlanComponentType.credits.rawValue {
-                let resetPeriodStr = data["resetPeriod"] as? String ?? PlanResetPeriod.none.rawValue
-                if resetPeriodStr == PlanResetPeriod.monthly.rawValue {
-                    let currentUsed = data["cycleCreditsUsed"] as? Int ?? 0
-                    if currentUsed > 0 {
-                        try await ref.updateData(["cycleCreditsUsed": FieldValue.increment(Int64(-1))])
-                    }
-                } else {
-                    try await ref.updateData(["remainingCredits": FieldValue.increment(Int64(1))])
-                }
-            }
-        }
-
-        let waitlistSnapshot = try await waitlistRef(gymId)
-            .whereField("classId", isEqualTo: classId.uuidString)
-            .getDocuments()
-
-        let sortedWaitlist = waitlistSnapshot.documents.sorted {
-            let date1 = ($0.data()["joinedAt"] as? Timestamp)?.dateValue() ?? Date.distantPast
-            let date2 = ($1.data()["joinedAt"] as? Timestamp)?.dateValue() ?? Date.distantPast
-            return date1 < date2
-        }
-
-        if let firstWaiting = sortedWaitlist.first,
-           let waitingUserId = firstWaiting.data()["userId"] as? String {
-            _ = try await bookingsRef(gymId).addDocument(data: [
-                "userId": waitingUserId,
+        do {
+            _ = try await functions.httpsCallable("cancelBooking").call([
+                "gymId": gymId.uuidString,
                 "classId": classId.uuidString,
-                "bookedAt": Timestamp(date: Date())
+                "bookingId": bookingDoc.documentID,
+                "onBehalfOfUserId": userId
             ])
-            try await firstWaiting.reference.delete()
-            try await adjustClassCounter(gymId: gymId, classId: classId, field: "waitlistCount", by: -1)
-        } else {
-            try await adjustClassCounter(gymId: gymId, classId: classId, field: "currentAttendees", by: -1)
+        } catch {
+            throw parseFunctionsError(error)
         }
     }
 
-    // MARK: - Waitlist
+    // MARK: - Waitlist (Authoritative Cloud Functions)
 
     func joinWaitlist(gymId: UUID, classId: UUID) async throws {
-        guard let uid = currentUID() else { throw FBError.notAuthenticated }
-
-        let classDoc = try await classesRef(gymId).document(classId.uuidString).getDocument()
-        guard let gymClass = parseClass(from: classDoc) else { throw FBError.classNotFound }
-        guard gymClass.startTime >= Date() else { throw FBError.classInPast }
-
-        let existing = try await waitlistRef(gymId)
-            .whereField("userId", isEqualTo: uid)
-            .whereField("classId", isEqualTo: classId.uuidString)
-            .getDocuments()
-
-        guard existing.documents.isEmpty else { return }
-
-        _ = try await waitlistRef(gymId).addDocument(data: [
-            "userId": uid,
-            "classId": classId.uuidString,
-            "joinedAt": Timestamp(date: Date())
-        ])
-
-        try await adjustClassCounter(gymId: gymId, classId: classId, field: "waitlistCount", by: 1)
+        guard currentUID() != nil else { throw FBError.notAuthenticated }
+        do {
+            _ = try await functions.httpsCallable("joinWaitlist").call([
+                "gymId": gymId.uuidString,
+                "classId": classId.uuidString
+            ])
+        } catch {
+            throw parseFunctionsError(error)
+        }
     }
 
     func leaveWaitlist(gymId: UUID, classId: UUID) async throws {
-        guard let uid = currentUID() else { throw FBError.notAuthenticated }
-
-        let entries = try await waitlistRef(gymId)
-            .whereField("userId", isEqualTo: uid)
-            .whereField("classId", isEqualTo: classId.uuidString)
-            .getDocuments()
-
-        for doc in entries.documents {
-            try await doc.reference.delete()
+        guard currentUID() != nil else { throw FBError.notAuthenticated }
+        do {
+            _ = try await functions.httpsCallable("leaveWaitlist").call([
+                "gymId": gymId.uuidString,
+                "classId": classId.uuidString
+            ])
+        } catch {
+            throw parseFunctionsError(error)
         }
+    }
 
-        if !entries.documents.isEmpty {
-            try await adjustClassCounter(gymId: gymId, classId: classId, field: "waitlistCount", by: -1)
+    private func parseFunctionsError(_ error: Error) -> Error {
+        let errorString = "\(error)"
+        if errorString.contains("CLASS_FULL") || errorString.contains("Class is full") {
+            return FBError.classFull
         }
+        if errorString.contains("INSUFFICIENT_CREDITS") || errorString.contains("No available credits") {
+            return FBError.insufficientCredits
+        }
+        if errorString.contains("NO_ACTIVE_PLAN") || errorString.contains("No active membership") {
+            return FBError.noActiveMembership
+        }
+        if errorString.contains("CLASS_IN_PAST") || errorString.contains("already started") {
+            return FBError.classInPast
+        }
+        if errorString.contains("CLASS_NOT_FOUND") || errorString.contains("Class not found") {
+            return FBError.classNotFound
+        }
+        if errorString.contains("BOOKING_NOT_FOUND") || errorString.contains("Booking not found") {
+            return FBError.bookingNotFound
+        }
+        return error
     }
 
     func fetchUserWaitlist(gymId: UUID) async throws -> Set<UUID> {

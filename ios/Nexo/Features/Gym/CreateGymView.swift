@@ -7,13 +7,14 @@
 
 import SwiftUI
 
+/// Platform-Admin-only: creates a gym and assigns its owner by email —
+/// the only way a gym gets created (see FEEDBACK.md's "Admin-Only Gym
+/// Creation" model). Reachable only from `PlatformDashboardView`.
 struct CreateGymView: View {
     @Environment(\.dismiss) private var dismiss
-    @Environment(AppState.self) private var appState
 
     @State private var gymName = ""
     @State private var city = ""
-    @State private var customJoinCode = ""
     private let suggestedCategories = [
         "CrossFit", "HIIT", "Strength", "Yoga", "Pilates",
         "Boxing", "Open Gym", "Spinning", "Cardio", "Mobility"
@@ -23,16 +24,22 @@ struct CreateGymView: View {
     @State private var customCategories: [String] = []
     @State private var newWorkoutType = ""
     @State private var showAddWorkoutType = false
+
+    @State private var ownerFirstName = ""
+    @State private var ownerLastName = ""
+    @State private var ownerEmail = ""
+    @State private var ownerPassword = ""
+
     @State private var isLoading = false
     @State private var createdGym: Gym?
     @State private var showSuccessModal = false
     @State private var errorMessage: String?
-    @State private var copiedCode = false
 
     var onCreated: (Gym) -> Void
 
     private var trimmedName: String { gymName.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedCity: String { city.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedOwnerEmail: String { ownerEmail.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var allCategories: [String] {
         var list = suggestedCategories
@@ -40,6 +47,10 @@ struct CreateGymView: View {
             list.append(custom)
         }
         return list
+    }
+
+    private var isValid: Bool {
+        !trimmedName.isEmpty && !ownerFirstName.isEmpty && trimmedOwnerEmail.contains("@") && ownerPassword.count >= 6
     }
 
     var body: some View {
@@ -53,18 +64,8 @@ struct CreateGymView: View {
                         .autocorrectionDisabled()
                 }
 
-                Section("Member Join Code (Optional)") {
-                    TextField("e.g. IRON99 (Optional)", text: $customJoinCode)
-                        .textInputAutocapitalization(.characters)
-                        .autocorrectionDisabled()
-
-                    Text("Leave blank to auto-generate from gym name. Members use this code or your invite link to join.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-
                 Section("Select Workout Categories") {
-                    Text("Tap the categories your gym offers:")
+                    Text("Tap the categories this gym offers:")
                         .font(.caption)
                         .foregroundStyle(.secondary)
 
@@ -112,6 +113,22 @@ struct CreateGymView: View {
                     }
                 }
 
+                Section("Assign Owner") {
+                    TextField("First Name", text: $ownerFirstName)
+                        .autocorrectionDisabled()
+                    TextField("Last Name", text: $ownerLastName)
+                        .autocorrectionDisabled()
+                    TextField("Owner Email", text: $ownerEmail)
+                        .textInputAutocapitalization(.never)
+                        .keyboardType(.emailAddress)
+                        .autocorrectionDisabled()
+                    SecureField("Password", text: $ownerPassword)
+
+                    Text("If this email already belongs to a Nexo user, they become the owner — no duplicate account is created.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
                 if let errorMessage {
                     Section {
                         Text(errorMessage)
@@ -128,15 +145,15 @@ struct CreateGymView: View {
                             ProgressView()
                                 .frame(maxWidth: .infinity)
                         } else {
-                            Text("Create & Launch Gym")
+                            Text("Create & Assign Owner")
                                 .font(.headline)
                                 .frame(maxWidth: .infinity)
                         }
                     }
-                    .disabled(trimmedName.isEmpty || isLoading)
+                    .disabled(!isValid || isLoading)
                 }
             }
-            .navigationTitle("Set Up Your Gym")
+            .navigationTitle("Create a Gym")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -174,11 +191,14 @@ struct CreateGymView: View {
         let resolvedCategories = selectedWorkoutTypes.isEmpty ? ["General Fitness"] : Array(selectedWorkoutTypes).sorted()
 
         do {
-            let gym = try await FirebaseBackend.shared.createGymForCurrentUser(
+            let gym = try await FirebaseBackend.shared.createGym(
                 name: trimmedName,
                 city: trimmedCity.isEmpty ? nil : trimmedCity,
-                joinCode: customJoinCode.isEmpty ? nil : customJoinCode,
-                workoutTypes: resolvedCategories
+                workoutTypes: resolvedCategories,
+                ownerFirstName: ownerFirstName.trimmingCharacters(in: .whitespaces),
+                ownerLastName: ownerLastName.trimmingCharacters(in: .whitespaces),
+                ownerEmail: trimmedOwnerEmail,
+                ownerPassword: ownerPassword
             )
             await MainActor.run {
                 self.createdGym = gym
@@ -194,18 +214,11 @@ struct CreateGymView: View {
     }
 }
 
-// MARK: - Success / Invite Share Sheet
+// MARK: - Success Sheet
 
 struct GymCreatedSuccessSheet: View {
     let gym: Gym
     var onFinish: () -> Void
-
-    @State private var copied = false
-
-    private var code: String { gym.joinCode ?? "NEXO" }
-    private var inviteLink: URL {
-        URL(string: "https://nexo.fit/join/\(code)") ?? URL(string: "https://nexo.fit")!
-    }
 
     var body: some View {
         NavigationStack {
@@ -224,69 +237,23 @@ struct GymCreatedSuccessSheet: View {
                 VStack(spacing: 8) {
                     Text(gym.name)
                         .font(.title2.bold())
-                    Text("Your gym is live and ready!")
+                    Text("Gym created and owner assigned. It's live now.")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                }
-
-                // Join Code Card
-                VStack(spacing: 12) {
-                    Text("Member Join Code")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .textCase(.uppercase)
-
-                    Text(code)
-                        .font(.system(size: 34, weight: .heavy, design: .monospaced))
-                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color(uiColor: .secondarySystemBackground))
-                        )
-
-                    Button {
-                        UIPasteboard.general.string = code
-                        copied = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { copied = false }
-                    } label: {
-                        Label(copied ? "Copied to Clipboard!" : "Copy Join Code", systemImage: copied ? "checkmark" : "doc.on.doc")
-                            .font(.footnote.weight(.medium))
-                    }
                 }
-                .padding()
-                .frame(maxWidth: .infinity)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                )
-                .padding(.horizontal)
 
-                // Share Buttons
-                VStack(spacing: 12) {
-                    ShareLink(
-                        item: inviteLink,
-                        subject: Text("Join \(gym.name) on Nexo"),
-                        message: Text("Join our gym on Nexo! Download the app and use join code: \(code) or tap the link:")
-                    ) {
-                        Label("Share Invite Link", systemImage: "square.and.arrow.up")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 14)
-                            .background(Color.accentColor)
-                            .foregroundStyle(.white)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                    }
-
-                    Button {
-                        onFinish()
-                    } label: {
-                        Text("Enter Gym Dashboard")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    }
-                    .padding(.top, 4)
+                Button {
+                    onFinish()
+                } label: {
+                    Text("Continue")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(Color.accentColor)
+                        .foregroundStyle(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding(.horizontal)
 

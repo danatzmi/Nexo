@@ -25,7 +25,7 @@ class SessionViewModel(
     sealed interface SessionState {
         data object Loading : SessionState
         data object SignedOut : SessionState
-        /** No gym memberships yet — [ui.gym.GymPickerScreen]'s "I am a Gym Member" / "I am a Gym Owner" onboarding hub. */
+        /** No gym memberships yet — [ui.gym.GymPickerScreen]'s "awaiting gym enrollment" waiting screen; there's no self-serve creation or public join, only a gym owner adding this user by email. */
         data object NoGyms : SessionState
         /** A Platform Admin with no specific gym entered — mirrors iOS's `PlatformDashboardView` being shown in place of a gym-scoped Home. Reachable on first launch (before ever selecting a gym) or via the gym switcher's "Platform Dashboard" entry. */
         data class PlatformDashboard(val myGyms: List<Pair<Gym, UserRole>>) : SessionState
@@ -48,25 +48,23 @@ class SessionViewModel(
                 return@launch
             }
 
-            val gyms = repository.fetchMyGyms()
             val platformRole = repository.fetchPlatformRole()
+            val gyms = resolveMyGyms(platformRole, repository)
 
-            if (gyms.isEmpty()) {
-                _state.value = if (platformRole == PlatformRole.ADMIN) SessionState.PlatformDashboard(gyms) else SessionState.NoGyms
+            if (platformRole == PlatformRole.ADMIN) {
+                // Platform admins land on the Platform Dashboard by default on launch/sign-in (matching iOS)
+                _state.value = SessionState.PlatformDashboard(gyms)
                 return@launch
             }
 
-            val lastGymId = sessionStore.getLastGymId()
-            if (platformRole == PlatformRole.ADMIN && lastGymId == null) {
-                // A platform admin with no prior gym selection lands on the
-                // dashboard by default, rather than being dropped into
-                // whichever gym happens to sort first.
-                _state.value = SessionState.PlatformDashboard(gyms)
+            if (gyms.isEmpty()) {
+                _state.value = SessionState.NoGyms
                 return@launch
             }
 
             // Auto-select: prefer the last selected gym if the user still
             // belongs to it, otherwise fall back to the first membership.
+            val lastGymId = sessionStore.getLastGymId()
             val selectedGymId = gyms.firstOrNull { it.first.id == lastGymId }?.first?.id ?: gyms.first().first.id
             sessionStore.setLastGymId(selectedGymId)
             _state.value = SessionState.Ready(selectedGymId, gyms, platformRole)
@@ -86,9 +84,9 @@ class SessionViewModel(
     /** Enters a specific gym from [SessionState.PlatformDashboard] or after creating/joining a gym. */
     fun enterGym(gymId: String) {
         viewModelScope.launch {
-            val gyms = repository.fetchMyGyms()
-            if (gyms.none { it.first.id == gymId }) return@launch
             val platformRole = repository.fetchPlatformRole()
+            val gyms = resolveMyGyms(platformRole, repository)
+            if (gyms.none { it.first.id == gymId }) return@launch
             sessionStore.setLastGymId(gymId)
             _state.value = SessionState.Ready(gymId, gyms, platformRole)
         }
@@ -108,55 +106,19 @@ class SessionViewModel(
         _state.value = SessionState.SignedOut
     }
 
-    // MARK: - Deep link: join-by-code
+}
 
-    data class DirectJoinState(
-        val code: String,
-        val isLoading: Boolean = true,
-        val gym: Gym? = null,
-        val isJoining: Boolean = false,
-        val errorMessage: String? = null
-    )
-
-    private val _directJoinState = MutableStateFlow<DirectJoinState?>(null)
-    val directJoinState: StateFlow<DirectJoinState?> = _directJoinState.asStateFlow()
-
-    /** Looks up [code] and shows a confirmation dialog — call once signed in (any [SessionState] other than [SessionState.Loading]/[SessionState.SignedOut]). */
-    fun presentDeepLinkCode(code: String) {
-        _directJoinState.value = DirectJoinState(code = code)
-        viewModelScope.launch {
-            val gym = try {
-                repository.fetchGymByJoinCode(code)
-            } catch (e: Exception) {
-                null
-            }
-            _directJoinState.value = _directJoinState.value?.copy(
-                isLoading = false,
-                gym = gym,
-                errorMessage = if (gym == null) "No gym found with that code." else null
-            )
-        }
-    }
-
-    /** Joins the gym from the current [DirectJoinState] — or just switches into it, without re-joining, if the user is already a member (e.g. they opened their own gym's invite link). */
-    fun confirmDirectJoin() {
-        val current = _directJoinState.value ?: return
-        val gym = current.gym ?: return
-
-        viewModelScope.launch {
-            _directJoinState.value = current.copy(isJoining = true)
-            try {
-                val existingGyms = repository.fetchMyGyms()
-                val targetGymId = if (existingGyms.any { it.first.id == gym.id }) gym.id else repository.joinGymByCode(current.code).id
-                _directJoinState.value = null
-                enterGym(targetGymId)
-            } catch (e: Exception) {
-                _directJoinState.value = current.copy(isJoining = false, errorMessage = "Failed to join: ${e.message}")
-            }
-        }
-    }
-
-    fun dismissDirectJoin() {
-        _directJoinState.value = null
+/**
+ * Resolves which gyms populate the session's list for the given platform role.
+ * Mirrors iOS's `resolveMyGyms` in `ContentView.swift`. Platform admins see all
+ * gyms in the system as owners for management purposes.
+ */
+suspend fun resolveMyGyms(role: PlatformRole, repository: BackendRepository): List<Pair<Gym, UserRole>> {
+    return if (role == PlatformRole.ADMIN) {
+        val allGyms = try { repository.fetchAvailableGyms() } catch (e: Exception) { emptyList() }
+        allGyms.map { it to UserRole.OWNER }
+    } else {
+        try { repository.fetchMyGyms() } catch (e: Exception) { emptyList() }
     }
 }
+

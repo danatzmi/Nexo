@@ -4,13 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nexo.app.data.repository.BackendRepository
 import com.nexo.app.domain.model.Gym
-import com.nexo.app.domain.model.sanitizeJoinCode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 
-/** The self-serve "I am a Gym Owner" onboarding wizard — mirrors iOS's `CreateGymView`. Kept out of the Composable per CLAUDE.md's "business logic stays out of views" rule. */
+/** Platform-Admin-only "Create a Gym" form — creates the gym and assigns its owner by email. Mirrors iOS's `CreateGymView`. Kept out of the Composable per CLAUDE.md's "business logic stays out of views" rule. */
 class CreateGymViewModel(private val repository: BackendRepository) : ViewModel() {
 
     companion object {
@@ -23,18 +22,20 @@ class CreateGymViewModel(private val repository: BackendRepository) : ViewModel(
     data class UiState(
         val gymName: String = "",
         val city: String = "",
-        val customJoinCode: String = "",
         val selectedWorkoutTypes: Set<String> = emptySet(),
         val customCategories: List<String> = emptyList(),
+        val ownerFirstName: String = "",
+        val ownerLastName: String = "",
+        val ownerEmail: String = "",
+        val ownerPassword: String = "",
         val isSaving: Boolean = false,
         val createdGym: Gym? = null,
         val errorMessage: String? = null
     ) {
         val trimmedName: String get() = gymName.trim()
+        val trimmedOwnerEmail: String get() = ownerEmail.trim()
         val allCategories: List<String> get() = SUGGESTED_CATEGORIES + customCategories.filter { it !in SUGGESTED_CATEGORIES }
-        val joinCodePreview: String
-            get() = sanitizeJoinCode(customJoinCode).takeIf { it.isNotBlank() } ?: previewFromName(trimmedName)
-        val isValid: Boolean get() = trimmedName.isNotBlank() && !isSaving
+        val isValid: Boolean get() = trimmedName.isNotBlank() && ownerFirstName.isNotBlank() && trimmedOwnerEmail.contains("@") && ownerPassword.length >= 6 && !isSaving
     }
 
     private val _uiState = MutableStateFlow(UiState())
@@ -42,7 +43,10 @@ class CreateGymViewModel(private val repository: BackendRepository) : ViewModel(
 
     fun updateGymName(value: String) { _uiState.value = _uiState.value.copy(gymName = value) }
     fun updateCity(value: String) { _uiState.value = _uiState.value.copy(city = value) }
-    fun updateCustomJoinCode(value: String) { _uiState.value = _uiState.value.copy(customJoinCode = value) }
+    fun updateOwnerFirstName(value: String) { _uiState.value = _uiState.value.copy(ownerFirstName = value) }
+    fun updateOwnerLastName(value: String) { _uiState.value = _uiState.value.copy(ownerLastName = value) }
+    fun updateOwnerEmail(value: String) { _uiState.value = _uiState.value.copy(ownerEmail = value) }
+    fun updateOwnerPassword(value: String) { _uiState.value = _uiState.value.copy(ownerPassword = value) }
 
     fun toggleCategory(category: String) {
         val current = _uiState.value.selectedWorkoutTypes
@@ -67,11 +71,14 @@ class CreateGymViewModel(private val repository: BackendRepository) : ViewModel(
             _uiState.value = state.copy(isSaving = true, errorMessage = null)
             try {
                 val categories = state.selectedWorkoutTypes.takeIf { it.isNotEmpty() }?.sorted() ?: listOf("General Fitness")
-                val gym = repository.createGymForCurrentUser(
+                val gym = repository.createGym(
                     name = state.trimmedName,
                     city = state.city.trim().takeIf { it.isNotEmpty() },
-                    joinCode = state.customJoinCode.takeIf { it.isNotBlank() },
-                    workoutTypes = categories
+                    workoutTypes = categories,
+                    ownerFirstName = state.ownerFirstName.trim(),
+                    ownerLastName = state.ownerLastName.trim(),
+                    ownerEmail = state.trimmedOwnerEmail,
+                    ownerPassword = state.ownerPassword
                 )
                 _uiState.value = _uiState.value.copy(isSaving = false, createdGym = gym)
             } catch (e: Exception) {
@@ -83,10 +90,4 @@ class CreateGymViewModel(private val repository: BackendRepository) : ViewModel(
     fun clearError() {
         _uiState.value = _uiState.value.copy(errorMessage = null)
     }
-}
-
-private fun previewFromName(name: String): String {
-    val letters = name.filter { it.isLetter() }.uppercase()
-    val prefix = letters.take(4).ifEmpty { "GYM" }
-    return "${prefix}99"
 }

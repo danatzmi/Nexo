@@ -28,21 +28,16 @@ Pilates, Yoga, functional training, etc).
      unless explicitly asked — right now this just means *disciplined
      layering*, not a second codebase.
 
-## Feature scope
+## Feature scope & Pilot Mandate
 
-Already built: multi-gym membership, roles (platform admin / owner / coach /
-member), class scheduling (incl. recurring series), booking, waitlist,
-workouts library.
+> 🛑 **FEATURE FREEZE IN EFFECT FOR REAL-GYM PILOT**:
+> Core backend hardening and concurrency verification are complete. **No new product features** are to be built unless strictly required to fix a P0/P1 pilot blocker. All engineering effort is now directed toward:
+> 1. Production configuration & deployment
+> 2. Real-device testing (iOS TestFlight & Android APK)
+> 3. Frictionless UX polish & edge-case recovery
+> 4. Observability, logging, and automated backups
 
-On the roadmap, **not to be built proactively** — implement only when
-explicitly instructed, one at a time:
-- Payments / memberships (billing plans, packages, credits)
-- Check-in / attendance tracking
-- Push notifications (booking reminders, waitlist promotion, class changes)
-- Recurring class series refinements (edit/delete "this and future")
-
-When picking up one of these, ask for the specific behavior wanted
-(e.g. payment provider, notification triggers) rather than assuming.
+Already built & verified: multi-gym membership, roles (platform admin / owner / coach / member), class scheduling (incl. recurring series), server-authoritative booking & waitlist, monthly credit auto-resets, wallet management, attendance check-in, logbook & PRs.
 
 ## Architecture
 

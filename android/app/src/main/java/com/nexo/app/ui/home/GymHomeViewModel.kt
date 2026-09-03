@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.nexo.app.data.repository.BackendRepository
 import com.nexo.app.domain.model.ActivePlanItem
 import com.nexo.app.domain.model.GymClass
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -29,31 +31,53 @@ class GymHomeViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    init { load() }
+    init {
+        load()
+        observeActivePlans()
+    }
+
+    private fun observeActivePlans() {
+        val uid = repository.currentUID() ?: return
+        viewModelScope.launch {
+            repository.observeActivePlans(gymId, uid).collect { plans ->
+                _uiState.value = _uiState.value.copy(activePlans = plans)
+            }
+        }
+    }
 
     fun load() {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isLoading = true)
             try {
-                val myGyms = repository.fetchMyGyms()
-                val (gym, role) = myGyms.firstOrNull { it.first.id == gymId } ?: (null to null)
-                val profile = repository.fetchMyProfile()
-                val classes = repository.fetchClasses(gymId)
-                val bookedIds = repository.fetchMyBookedClassIds(gymId)
-                val now = System.currentTimeMillis()
-                val next = classes
-                    .filter { it.id in bookedIds && it.startTimeMillis >= now }
-                    .minByOrNull { it.startTimeMillis }
-                val plans = repository.currentUID()?.let { repository.fetchActivePlans(gymId, it) }.orEmpty()
+                coroutineScope {
+                    val myGymsDeferred = async { repository.fetchMyGyms() }
+                    val profileDeferred = async { repository.fetchMyProfile() }
+                    val classesDeferred = async { repository.fetchClasses(gymId) }
+                    val bookedIdsDeferred = async { repository.fetchMyBookedClassIds(gymId) }
+                    val plansDeferred = async {
+                        repository.currentUID()?.let { repository.fetchActivePlans(gymId, it) }.orEmpty()
+                    }
 
-                _uiState.value = UiState(
-                    isLoading = false,
-                    gymName = gym?.name.orEmpty(),
-                    roleDisplayName = role?.displayName.orEmpty(),
-                    userDisplayName = profile?.fullName.orEmpty(),
-                    nextBookedClass = next,
-                    activePlans = plans
-                )
+                    val myGyms = myGymsDeferred.await()
+                    val (gym, role) = myGyms.firstOrNull { it.first.id == gymId } ?: (null to null)
+                    val profile = profileDeferred.await()
+                    val classes = classesDeferred.await()
+                    val bookedIds = bookedIdsDeferred.await()
+                    val now = System.currentTimeMillis()
+                    val next = classes
+                        .filter { it.id in bookedIds && it.startTimeMillis >= now }
+                        .minByOrNull { it.startTimeMillis }
+                    val plans = plansDeferred.await()
+
+                    _uiState.value = UiState(
+                        isLoading = false,
+                        gymName = gym?.name.orEmpty(),
+                        roleDisplayName = role?.displayName.orEmpty(),
+                        userDisplayName = profile?.fullName.orEmpty(),
+                        nextBookedClass = next,
+                        activePlans = plans
+                    )
+                }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(isLoading = false, errorMessage = "Error loading home: ${e.message}")
             }
@@ -64,24 +88,34 @@ class GymHomeViewModel(
     fun refresh() {
         viewModelScope.launch {
             try {
-                val myGyms = repository.fetchMyGyms()
-                val (gym, role) = myGyms.firstOrNull { it.first.id == gymId } ?: (null to null)
-                val profile = repository.fetchMyProfile()
-                val classes = repository.fetchClasses(gymId)
-                val bookedIds = repository.fetchMyBookedClassIds(gymId)
-                val now = System.currentTimeMillis()
-                val next = classes
-                    .filter { it.id in bookedIds && it.startTimeMillis >= now }
-                    .minByOrNull { it.startTimeMillis }
-                val plans = repository.currentUID()?.let { repository.fetchActivePlans(gymId, it) }.orEmpty()
+                coroutineScope {
+                    val myGymsDeferred = async { repository.fetchMyGyms() }
+                    val profileDeferred = async { repository.fetchMyProfile() }
+                    val classesDeferred = async { repository.fetchClasses(gymId) }
+                    val bookedIdsDeferred = async { repository.fetchMyBookedClassIds(gymId) }
+                    val plansDeferred = async {
+                        repository.currentUID()?.let { repository.fetchActivePlans(gymId, it) }.orEmpty()
+                    }
 
-                _uiState.value = _uiState.value.copy(
-                    gymName = gym?.name.orEmpty(),
-                    roleDisplayName = role?.displayName.orEmpty(),
-                    userDisplayName = profile?.fullName.orEmpty(),
-                    nextBookedClass = next,
-                    activePlans = plans
-                )
+                    val myGyms = myGymsDeferred.await()
+                    val (gym, role) = myGyms.firstOrNull { it.first.id == gymId } ?: (null to null)
+                    val profile = profileDeferred.await()
+                    val classes = classesDeferred.await()
+                    val bookedIds = bookedIdsDeferred.await()
+                    val now = System.currentTimeMillis()
+                    val next = classes
+                        .filter { it.id in bookedIds && it.startTimeMillis >= now }
+                        .minByOrNull { it.startTimeMillis }
+                    val plans = plansDeferred.await()
+
+                    _uiState.value = _uiState.value.copy(
+                        gymName = gym?.name.orEmpty(),
+                        roleDisplayName = role?.displayName.orEmpty(),
+                        userDisplayName = profile?.fullName.orEmpty(),
+                        nextBookedClass = next,
+                        activePlans = plans
+                    )
+                }
             } catch (e: Exception) {
                 // Keep existing state on silent refresh error
             }

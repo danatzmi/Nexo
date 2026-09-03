@@ -28,23 +28,6 @@ class CreateGymViewModelTest {
     }
 
     @Test
-    fun joinCodePreview_fallsBackToNameDerivedPreview_whenNoCustomCodeEntered() {
-        val viewModel = CreateGymViewModel(FakeBackendRepository())
-        viewModel.updateGymName("Iron Temple")
-
-        assertEquals("IRON99", viewModel.uiState.value.joinCodePreview)
-    }
-
-    @Test
-    fun joinCodePreview_usesSanitizedCustomCode_whenProvided() {
-        val viewModel = CreateGymViewModel(FakeBackendRepository())
-        viewModel.updateGymName("Iron Temple")
-        viewModel.updateCustomJoinCode("my-code!")
-
-        assertEquals("MYCODE", viewModel.uiState.value.joinCodePreview)
-    }
-
-    @Test
     fun toggleCategory_addsThenRemoves() {
         val viewModel = CreateGymViewModel(FakeBackendRepository())
 
@@ -68,22 +51,42 @@ class CreateGymViewModelTest {
     @Test
     fun createGym_createsIt_withGeneralFitnessFallback_whenNoCategoriesSelected() = runTest {
         val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
+        repo.signedInUID = "admin-1"
         val viewModel = CreateGymViewModel(repo)
         viewModel.updateGymName("Iron Temple")
+        viewModel.updateOwnerFirstName("Dana")
+        viewModel.updateOwnerLastName("Cohen")
+        viewModel.updateOwnerEmail("dana@example.com")
+        viewModel.updateOwnerPassword("password123")
 
         viewModel.createGym()
 
         val created = viewModel.uiState.value.createdGym
         assertEquals("Iron Temple", created?.name)
         assertEquals(listOf("General Fitness"), created?.workoutTypes)
+        assertEquals("dana@example.com", repo.fetchTeam(created!!.id).first().email)
     }
 
     @Test
     fun createGym_isNoOp_whenNameIsBlank() = runTest {
         val repo = FakeBackendRepository()
-        repo.signedInUID = "owner-1"
+        repo.signedInUID = "admin-1"
         val viewModel = CreateGymViewModel(repo)
+        viewModel.updateOwnerFirstName("Dana")
+        viewModel.updateOwnerEmail("dana@example.com")
+        viewModel.updateOwnerPassword("password123")
+
+        viewModel.createGym()
+
+        assertEquals(null, viewModel.uiState.value.createdGym)
+    }
+
+    @Test
+    fun createGym_isNoOp_whenOwnerFieldsAreIncomplete() = runTest {
+        val repo = FakeBackendRepository()
+        repo.signedInUID = "admin-1"
+        val viewModel = CreateGymViewModel(repo)
+        viewModel.updateGymName("Iron Temple")
 
         viewModel.createGym()
 

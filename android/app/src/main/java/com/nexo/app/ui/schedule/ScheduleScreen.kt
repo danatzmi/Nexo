@@ -42,6 +42,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
+import androidx.compose.ui.draw.alpha
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -119,6 +120,19 @@ fun ScheduleScreen(
         }
     }
 
+    // Fires only once the Book/Waitlist call is server-confirmed — see
+    // ScheduleViewModel.SuccessMessage's doc comment. Never triggered from
+    // the button's onClick directly.
+    LaunchedEffect(uiState.successMessage) {
+        uiState.successMessage?.let {
+            successPopupTitle = it.title
+            successPopupMessage = it.message
+            successPopupIsWaitlist = it.isWaitlist
+            showSuccessPopup = true
+            viewModel.clearSuccessMessage()
+        }
+    }
+
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Scaffold(
             snackbarHost = { SnackbarHost(snackbarHostState) },
@@ -162,21 +176,14 @@ fun ScheduleScreen(
                                 gymClass = gymClass,
                                 isBooked = gymClass.id in uiState.bookedClassIds,
                                 isWaitlisted = gymClass.id in uiState.waitlistedClassIds,
-                                onBook = {
-                                    viewModel.book(gymClass.id)
-                                    successPopupTitle = "Booked!"
-                                    successPopupMessage = "${gymClass.title} · ${gymClass.formattedTime}"
-                                    successPopupIsWaitlist = false
-                                    showSuccessPopup = true
-                                },
+                                waitlistPosition = uiState.waitlistPositions[gymClass.id],
+                                checkedInCount = uiState.checkedInCounts[gymClass.id] ?: 0,
+                                canManage = canManage,
+                                bookingBlockedReason = if (canManage) null else uiState.bookingBlockedReason(gymClass),
+                                onLoadDetails = { viewModel.loadRowDetails(gymClass.id, canManage) },
+                                onBook = { viewModel.book(gymClass.id) },
                                 onCancel = { classToCancel = gymClass },
-                                onJoinWaitlist = {
-                                    viewModel.joinWaitlist(gymClass.id)
-                                    successPopupTitle = "Waitlisted!"
-                                    successPopupMessage = "${gymClass.title} · ${gymClass.formattedTime}"
-                                    successPopupIsWaitlist = true
-                                    showSuccessPopup = true
-                                },
+                                onJoinWaitlist = { viewModel.joinWaitlist(gymClass.id) },
                                 onLeaveWaitlist = { classToLeaveWaitlist = gymClass },
                                 onOpenDetail = { onOpenClassDetail(gymClass.id) }
                             )
@@ -408,12 +415,35 @@ private fun ClassRow(
     gymClass: GymClass,
     isBooked: Boolean,
     isWaitlisted: Boolean,
+    waitlistPosition: Int?,
+    checkedInCount: Int,
+    canManage: Boolean,
+    /** null when this member can book (or bypasses the check as staff); otherwise a short reason — "No active plan" / "No credits remaining" — shown under a dimmed, disabled Book button instead of the normal one. */
+    bookingBlockedReason: String?,
+    onLoadDetails: () -> Unit,
     onBook: () -> Unit,
     onCancel: () -> Unit,
     onJoinWaitlist: () -> Unit,
     onLeaveWaitlist: () -> Unit,
     onOpenDetail: () -> Unit
 ) {
+    val isPast = gymClass.startTimeMillis < System.currentTimeMillis()
+
+    LaunchedEffect(gymClass.id) { onLoadDetails() }
+
+    // "Attendees: (x/y) · Waitlist: (...) · Checked In: (...)" — mirrors
+    // ClassDetailScreen's AttendeesCard title exactly, so the Schedule list
+    // and Class Detail always agree on this text.
+    val spots = "${gymClass.currentAttendees}/${gymClass.capacity}"
+    var attendeesTitle = "Attendees: ($spots)"
+    if (gymClass.waitlistCount > 0) {
+        val waitlist = if (isWaitlisted) "${waitlistPosition ?: 0}/${gymClass.waitlistCount}" else "${gymClass.waitlistCount}"
+        attendeesTitle += " · Waitlist: ($waitlist)"
+    }
+    if (canManage) {
+        attendeesTitle += " · Checked In: ($checkedInCount/${gymClass.currentAttendees})"
+    }
+
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Column(Modifier.fillMaxWidth().clickable(onClick = onOpenDetail)) {
@@ -424,18 +454,28 @@ private fun ClassRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 Text(
-                    text = gymClass.formattedAttendeesLabel(),
+                    text = attendeesTitle,
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
 
-            Row(modifier = Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
-                when {
-                    isBooked -> OutlinedButton(onClick = onCancel) { Text("Cancel") }
-                    isWaitlisted -> OutlinedButton(onClick = onLeaveWaitlist) { Text("Leave Waitlist") }
-                    gymClass.isFull -> Button(onClick = onJoinWaitlist) { Text("Join Waitlist") }
-                    else -> Button(onClick = onBook) { Text("Book") }
+            if (!isPast) {
+                Row(modifier = Modifier.fillMaxWidth().padding(top = 12.dp), horizontalArrangement = Arrangement.End) {
+                    when {
+                        isBooked -> OutlinedButton(onClick = onCancel) { Text("Cancel") }
+                        isWaitlisted -> OutlinedButton(onClick = onLeaveWaitlist) { Text("Leave Waitlist") }
+                        gymClass.isFull -> Button(onClick = onJoinWaitlist) { Text("Join Waitlist") }
+                        bookingBlockedReason != null -> Column(horizontalAlignment = Alignment.End) {
+                            Button(onClick = {}, enabled = false, modifier = Modifier.alpha(0.45f)) { Text("Book") }
+                            Text(
+                                text = bookingBlockedReason,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        else -> Button(onClick = onBook) { Text("Book") }
+                    }
                 }
             }
         }

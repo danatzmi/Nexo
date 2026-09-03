@@ -181,4 +181,57 @@ struct ScheduleViewModelTests {
 
         #expect(viewModel.classes.first?.waitlistCount == 0)
     }
+
+    // MARK: - Proactive plan/credit dimming
+
+    @Test("bookingBlockedReason is nil once loadBookingStatus loads a covering unlimited plan")
+    func bookingBlockedReasonNilWithUnlimitedPlan() async {
+        let (viewModel, _, _, gymClass) = makeSUT()
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason(for: gymClass) == nil)
+    }
+
+    @Test("bookingBlockedReason is \"No active plan\" for a member with no active plans at all")
+    func bookingBlockedReasonNoActivePlan() async {
+        let mock = MockBackendService()
+        mock.signedInUID = "member-1"
+        let gymId = UUID()
+        let gymClass = GymClass(title: "Morning HIIT", coach: "Alex", startTime: Date().addingTimeInterval(3600), capacity: 12, currentAttendees: 0)
+        mock.classes[gymId] = [gymClass.id: gymClass]
+        let viewModel = ScheduleViewModel(gymId: gymId, backend: mock)
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason(for: gymClass) == "No active plan")
+    }
+
+    @Test("bookingBlockedReason is \"No credits remaining\" for a member with a matching but exhausted credit plan")
+    func bookingBlockedReasonNoCreditsRemaining() async {
+        let mock = MockBackendService()
+        mock.signedInUID = "member-1"
+        let gymId = UUID()
+        let gymClass = GymClass(title: "Morning HIIT", coach: "Alex", startTime: Date().addingTimeInterval(3600), capacity: 12, currentAttendees: 0)
+        mock.classes[gymId] = [gymClass.id: gymClass]
+        let exhaustedItem = ActivePlanItem(
+            id: UUID().uuidString,
+            planName: "10-Class Pass",
+            type: .credits,
+            resetPeriod: .none,
+            workoutType: nil,
+            creditCount: 10,
+            remainingCredits: 0,
+            cycleCreditsUsed: 0,
+            cycleAnchorDate: Date(),
+            lastCycleIndex: 0,
+            expiresAt: Date().addingTimeInterval(86400 * 30)
+        )
+        mock.activePlans[gymId, default: [:]]["member-1", default: [:]][exhaustedItem.id] = exhaustedItem
+        let viewModel = ScheduleViewModel(gymId: gymId, backend: mock)
+
+        await viewModel.loadBookingStatus()
+
+        #expect(viewModel.bookingBlockedReason(for: gymClass) == "No credits remaining")
+    }
 }

@@ -13,7 +13,6 @@ import SwiftUI
 private extension Color {
     static let mutedCrimson = Color(red: 0.68, green: 0.30, blue: 0.32)
     static let mutedSlate = Color(red: 0.42, green: 0.46, blue: 0.51)
-    static let mutedAmber = Color(red: 0.78, green: 0.58, blue: 0.28)
 }
 
 struct ScheduleView: View {
@@ -108,10 +107,15 @@ struct ScheduleView: View {
                             gymClass: gymClass,
                             isBooked: viewModel.bookedClassIds.contains(gymClass.id),
                             isWaitlisted: viewModel.waitlistedClassIds.contains(gymClass.id),
+                            bookingBlockedReason: appState.canManageClasses ? nil : viewModel.bookingBlockedReason(for: gymClass),
+                            waitlistPosition: viewModel.waitlistPositions[gymClass.id],
+                            checkedInCount: viewModel.checkedInCounts[gymClass.id] ?? 0,
+                            canManage: appState.canManageClasses,
                             onBook: { Task { await viewModel.bookClass(gymClass) } },
                             onCancel: { classToCancel = gymClass; showCancelCard = true },
                             onJoinWaitlist: { Task { await viewModel.joinWaitlist(gymClass) } },
-                            onLeaveWaitlist: { classToLeaveWaitlist = gymClass; showLeaveWaitlistCard = true }
+                            onLeaveWaitlist: { classToLeaveWaitlist = gymClass; showLeaveWaitlistCard = true },
+                            loadDetails: { await viewModel.loadRowDetails(for: gymClass, canManage: appState.canManageClasses) }
                         )
                         .listRowSeparator(.hidden)
                         .overlay(alignment: .bottom) {
@@ -348,12 +352,39 @@ private struct ClassRow: View {
     let gymClass: GymClass
     let isBooked: Bool
     let isWaitlisted: Bool
+    /// nil when this member can book (or bypasses the check via
+    /// `appState.canManageClasses`); otherwise a short reason — "No active
+    /// plan" / "No credits remaining" — shown under a dimmed, non-tappable
+    /// Book button instead of the normal one.
+    let bookingBlockedReason: String?
+    let waitlistPosition: Int?
+    let checkedInCount: Int
+    let canManage: Bool
     let onBook: () -> Void
     let onCancel: () -> Void
     let onJoinWaitlist: () -> Void
     let onLeaveWaitlist: () -> Void
+    let loadDetails: () async -> Void
 
     private var isPast: Bool { gymClass.startTime < Date() }
+
+    /// "Attendees: (x/y) · Waitlist: (...) · Checked In: (...)" — mirrors
+    /// `ClassDetailView.attendeesCardTitle` exactly, so the Schedule list
+    /// and Class Detail always agree on this text.
+    private var attendeesTitle: String {
+        let spots = "\(gymClass.currentAttendees)/\(gymClass.capacity)"
+        var title = "Attendees: (\(spots))"
+        if gymClass.waitlistCount > 0 {
+            let waitlist = isWaitlisted
+                ? "\(waitlistPosition ?? 0)/\(gymClass.waitlistCount)"
+                : "\(gymClass.waitlistCount)"
+            title += " · Waitlist: (\(waitlist))"
+        }
+        if canManage {
+            title += " · Checked In: (\(checkedInCount)/\(gymClass.currentAttendees))"
+        }
+        return title
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -379,17 +410,13 @@ private struct ClassRow: View {
                     Text(gymClass.coach)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
-                    HStack(spacing: 8) {
-                        Text("\(gymClass.currentAttendees) / \(gymClass.capacity) booked")
-                            .font(.footnote)
-                            .foregroundStyle(gymClass.isFull ? Color.mutedCrimson : Color.mutedSlate)
-                        if gymClass.waitlistCount > 0 {
-                            Text("\(gymClass.waitlistCount) waiting")
-                                .font(.footnote)
-                                .foregroundStyle(Color.mutedAmber)
-                        }
-                    }
+                    Text(attendeesTitle)
+                        .font(.footnote)
+                        .foregroundStyle(gymClass.isFull ? Color.mutedCrimson : Color.mutedSlate)
                 }
+            }
+            .task(id: gymClass.id) {
+                await loadDetails()
             }
 
             if !isPast {
@@ -423,10 +450,24 @@ private struct ClassRow: View {
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
-                                .background(Color.orange)
-                                .clipShape(Capsule())
                         }
+                        .background(Color.orange)
+                        .clipShape(Capsule())
                         .buttonStyle(.plain)
+                    }
+                } else if let reason = bookingBlockedReason {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Book")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 8)
+                            .background(Color.blue)
+                            .clipShape(Capsule())
+                            .opacity(0.45)
+                        Text(reason)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     Button(action: onBook) {
@@ -435,9 +476,9 @@ private struct ClassRow: View {
                             .foregroundStyle(.white)
                             .padding(.horizontal, 16)
                             .padding(.vertical, 8)
-                            .background(Color.blue)
-                            .clipShape(Capsule())
                     }
+                    .background(Color.blue)
+                    .clipShape(Capsule())
                     .buttonStyle(.plain)
                 }
             }
@@ -453,7 +494,7 @@ private struct ClassRow: View {
                         Button("Join Waitlist", action: onJoinWaitlist)
                             .tint(.orange)
                     }
-                } else {
+                } else if bookingBlockedReason == nil {
                     Button("Book", action: onBook)
                         .tint(.blue)
                 }

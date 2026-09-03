@@ -14,9 +14,7 @@ import com.nexo.app.domain.model.TeamMember
 import com.nexo.app.domain.model.UserRole
 import com.nexo.app.domain.model.WorkoutLog
 import com.nexo.app.domain.model.applyTimeOfDay
-import com.nexo.app.domain.model.generateJoinCode
 import com.nexo.app.domain.model.mondayStartMillis
-import com.nexo.app.domain.model.sanitizeJoinCode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -51,14 +49,18 @@ class FakeBackendRepository : BackendRepository {
     private val waitlist = mutableMapOf<String, MutableList<Pair<String, String>>>() // gymId -> ordered [(userId, classId)], insertion order = join order
     /** Distinct from [platformRoles] (used by [fetchPlatformRole]/the admin branch of [fetchMyGyms]) — kept as its own store so existing [seedPlatformRole] call sites don't need to change; [updatePlatformRole] keeps both in sync going forward. */
     private val platformUsers = mutableMapOf<String, PlatformUser>() // uid -> full platform user record, for the Users tab
-    private val gymJoinCodes = mutableMapOf<String, String>() // uppercase join code -> gymId
     private val activePlans = mutableMapOf<Pair<String, String>, MutableMap<String, ActivePlanItem>>() // (gymId, userId) -> (activePlanId -> item)
     private val bookingActivePlanIds = mutableMapOf<String, MutableMap<Pair<String, String>, String>>() // gymId -> ((userId, classId) -> activePlanId consumed to authorize it)
     private val classFlows = mutableMapOf<String, MutableStateFlow<List<GymClass>>>() // gymId -> live view backing observeClasses
+    private val activePlansFlows = mutableMapOf<Pair<String, String>, MutableStateFlow<List<ActivePlanItem>>>() // (gymId, userId) -> live view backing observeActivePlans
 
     /** Pushes [gymId]'s current class list to any active [observeClasses] collector — called after every mutation to [classes]. A no-op if no one is observing that gym yet (the flow is lazily seeded with current state on first [observeClasses] call). */
     private fun notifyClassesChanged(gymId: String) {
         classFlows[gymId]?.value = classes[gymId]?.values?.toList() ?: emptyList()
+    }
+
+    private fun notifyActivePlansChanged(gymId: String, userId: String) {
+        activePlansFlows[gymId to userId]?.value = activePlans[gymId to userId]?.values?.toList() ?: emptyList()
     }
 
     // MARK: - Test/preview seeding
@@ -105,6 +107,7 @@ class FakeBackendRepository : BackendRepository {
     /** Adds one item to [userId]'s credit wallet for [gymId] — for setting up pre-existing plan state rather than exercising `grantPlanToMember` (not yet ported to Android). */
     fun seedActivePlan(gymId: String, userId: String, item: ActivePlanItem) {
         activePlans.getOrPut(gymId to userId) { mutableMapOf() }[item.id] = item
+        notifyActivePlansChanged(gymId, userId)
     }
 
     /** Synchronous counterpart to [addWorkoutLog], for seeding demo/preview data without a coroutine scope. */
@@ -248,6 +251,7 @@ class FakeBackendRepository : BackendRepository {
                     item.copy(remainingCredits = item.remainingCredits + 1)
                 }
                 activePlans[gymId to uid]?.set(consumedActivePlanId, updated)
+                notifyActivePlansChanged(gymId, uid)
             }
         }
 
@@ -274,6 +278,13 @@ class FakeBackendRepository : BackendRepository {
         return activePlans[gymId to userId]?.values?.toList() ?: emptyList()
     }
 
+    override fun observeActivePlans(gymId: String, userId: String): Flow<List<ActivePlanItem>> {
+        val flow = activePlansFlows.getOrPut(gymId to userId) {
+            MutableStateFlow(activePlans[gymId to userId]?.values?.toList() ?: emptyList())
+        }
+        return flow.asStateFlow()
+    }
+
     override suspend fun grantPlanToMember(gymId: String, userId: String, plan: MembershipPlan, customExpiresAtMillis: Long?) {
         errorToThrow?.let { throw it }
         val now = System.currentTimeMillis()
@@ -293,11 +304,13 @@ class FakeBackendRepository : BackendRepository {
             )
             activePlans.getOrPut(gymId to userId) { mutableMapOf() }[item.id] = item
         }
+        notifyActivePlansChanged(gymId, userId)
     }
 
     override suspend fun revokeActivePlan(gymId: String, userId: String, activePlanId: String) {
         errorToThrow?.let { throw it }
         activePlans[gymId to userId]?.remove(activePlanId)
+        notifyActivePlansChanged(gymId, userId)
     }
 
     override suspend fun fetchMemberBookings(gymId: String, userId: String): List<GymClass> {
@@ -333,6 +346,7 @@ class FakeBackendRepository : BackendRepository {
                 chosen.copy(remainingCredits = chosen.remainingCredits - 1)
             }
             activePlans[gymId to userId]?.set(chosen.id, updated)
+            notifyActivePlansChanged(gymId, userId)
             return chosen.id
         }
 
@@ -610,7 +624,6 @@ class FakeBackendRepository : BackendRepository {
 
     override suspend fun deleteGym(gymId: String) {
         errorToThrow?.let { throw it }
-        gyms[gymId]?.joinCode?.let { gymJoinCodes.remove(it) }
         gyms.remove(gymId)
         memberships.remove(gymId)
         classes.remove(gymId)
@@ -625,33 +638,7 @@ class FakeBackendRepository : BackendRepository {
         notifyClassesChanged(gymId)
     }
 
-    override suspend fun createGymForCurrentUser(name: String, city: String?, joinCode: String?, workoutTypes: List<String>): Gym {
-        errorToThrow?.let { throw it }
-        val uid = signedInUID ?: throw BackendException.NotAuthenticated
-
-        val requested = joinCode?.let { sanitizeJoinCode(it) }?.takeIf { it.isNotBlank() } ?: generateJoinCode(name)
-        var code = requested
-        var attempt = 1
-        while (gymJoinCodes.containsKey(code)) {
-            code = "$requested$attempt"
-            attempt++
-        }
-
-        val gym = Gym(id = UUID.randomUUID().toString(), name = name, ownerUID = uid, workoutTypes = workoutTypes, joinCode = code, city = city)
-        gyms[gym.id] = gym
-        gymJoinCodes[code] = gym.id
-        memberships.getOrPut(gym.id) { mutableMapOf() }[uid] = UserRole.OWNER
-        val profile = profiles[uid]
-        team.getOrPut(gym.id) { mutableMapOf() }[uid] = TeamMember(
-            id = uid,
-            fullName = profile?.fullName.orEmpty(),
-            email = profile?.email.orEmpty(),
-            role = UserRole.OWNER
-        )
-        return gym
-    }
-
-    override suspend fun createGym(name: String, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym {
+    override suspend fun createGym(name: String, city: String?, workoutTypes: List<String>, ownerFirstName: String, ownerLastName: String, ownerEmail: String, ownerPassword: String): Gym {
         errorToThrow?.let { throw it }
         signedInUID ?: throw BackendException.NotAuthenticated
 
@@ -659,50 +646,15 @@ class FakeBackendRepository : BackendRepository {
         val ownerUID = existingUid ?: registerNewAccount(ownerFirstName, ownerLastName, ownerEmail)
         val ownerFullName = profiles[ownerUID]?.fullName ?: "$ownerFirstName $ownerLastName".trim()
 
-        val requested = generateJoinCode(name)
-        var code = requested
-        var attempt = 1
-        while (gymJoinCodes.containsKey(code)) {
-            code = "$requested$attempt"
-            attempt++
-        }
-
-        val gym = Gym(id = UUID.randomUUID().toString(), name = name, ownerUID = ownerUID, joinCode = code)
+        val resolvedWorkoutTypes = workoutTypes.ifEmpty { Gym.DEFAULT_WORKOUT_TYPES }
+        val gym = Gym(id = UUID.randomUUID().toString(), name = name, ownerUID = ownerUID, workoutTypes = resolvedWorkoutTypes, city = city)
         gyms[gym.id] = gym
-        gymJoinCodes[code] = gym.id
         memberships.getOrPut(gym.id) { mutableMapOf() }[ownerUID] = UserRole.OWNER
         team.getOrPut(gym.id) { mutableMapOf() }[ownerUID] = TeamMember(
             id = ownerUID,
             fullName = ownerFullName,
             email = ownerEmail,
             role = UserRole.OWNER
-        )
-        return gym
-    }
-
-    override suspend fun fetchGymByJoinCode(code: String): Gym? {
-        errorToThrow?.let { throw it }
-        val upper = code.uppercase()
-        val gymId = gymJoinCodes[upper]
-        if (gymId != null) return gyms[gymId]
-        // Fallback for a gym seeded directly (via seedGym) rather than through
-        // createGymForCurrentUser, which is the only path that registers
-        // gymJoinCodes — mirrors FirebaseBackendRepository's own fallback
-        // query for gyms predating the gymCodes lookup collection.
-        return gyms.values.firstOrNull { it.joinCode?.uppercase() == upper }
-    }
-
-    override suspend fun joinGymByCode(code: String): Gym {
-        errorToThrow?.let { throw it }
-        val uid = signedInUID ?: throw BackendException.NotAuthenticated
-        val gym = fetchGymByJoinCode(code) ?: throw BackendException.GymNotFound
-
-        memberships.getOrPut(gym.id) { mutableMapOf() }[uid] = UserRole.MEMBER
-        val profile = profiles[uid]
-        gymMembers.getOrPut(gym.id) { mutableMapOf() }[uid] = GymMember(
-            id = uid,
-            fullName = profile?.fullName.orEmpty(),
-            email = profile?.email.orEmpty()
         )
         return gym
     }

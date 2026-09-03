@@ -103,7 +103,7 @@ struct GymManagementTests {
         mock.users[existingUID] = PlatformUser(id: existingUID, firstName: "Dana", lastName: "Existing", email: "dana@example.com", role: .user)
 
         let gym = try await mock.createGym(
-            name: "Second Gym",
+            name: "Second Gym", city: nil, workoutTypes: [],
             ownerFirstName: "Ignored", ownerLastName: "Ignored",
             ownerEmail: "dana@example.com", ownerPassword: "irrelevant"
         )
@@ -122,68 +122,30 @@ struct GymManagementTests {
         let mock = MockBackendService()
 
         let gym = try await mock.createGym(
-            name: "First Gym",
+            name: "First Gym", city: "Tel Aviv", workoutTypes: ["CrossFit"],
             ownerFirstName: "Jamie", ownerLastName: "New",
             ownerEmail: "jamie@example.com", ownerPassword: "irrelevant"
         )
 
         #expect(mock.users[gym.ownerUID]?.email == "jamie@example.com")
+        #expect(gym.city == "Tel Aviv")
+        #expect(gym.workoutTypes == ["CrossFit"])
         let teamEntry = try #require(mock.team[gym.id]?.first)
         #expect(teamEntry.firstName == "Jamie")
         #expect(teamEntry.lastName == "New")
     }
 
-    // MARK: - Self-serve Gym Creation & Join by Code
-
-    @Test("createGymForCurrentUser creates gym with owner role and joinCode")
-    func createGymForCurrentUserSetsOwnerRoleAndJoinCode() async throws {
+    @Test("createGym does not add the gym to myGymsList when the signed-in user isn't the assigned owner")
+    func createGymDoesNotAffectAnUnrelatedSignedInUsersGymList() async throws {
         let mock = MockBackendService()
-        let uid = "owner-uid"
-        mock.signedInUID = uid
-        mock.users[uid] = PlatformUser(id: uid, firstName: "Dana", lastName: "Owner", email: "dana@example.com", role: .user)
+        mock.signedInUID = "admin-1"
 
-        let gym = try await mock.createGymForCurrentUser(
-            name: "Iron Temple",
-            city: "Tel Aviv",
-            joinCode: "IRON99",
-            workoutTypes: ["CrossFit", "Strength"]
+        let gym = try await mock.createGym(
+            name: "Third Gym", city: nil, workoutTypes: [],
+            ownerFirstName: "Jamie", ownerLastName: "New",
+            ownerEmail: "jamie@example.com", ownerPassword: "irrelevant"
         )
 
-        #expect(gym.name == "Iron Temple")
-        #expect(gym.ownerUID == uid)
-        #expect(gym.joinCode == "IRON99")
-        #expect(gym.city == "Tel Aviv")
-        #expect(mock.userRoles[gym.id]?[uid] == .owner)
-        #expect(mock.myGymsList.contains(where: { $0.gym.id == gym.id && $0.role == .owner }))
-    }
-
-    @Test("fetchGymByJoinCode finds matching gym case-insensitively")
-    func fetchGymByJoinCodeFindsMatchingGymCaseInsensitively() async throws {
-        let mock = MockBackendService()
-        let gym = Gym(name: "CrossFit Central", ownerUID: "owner-1", joinCode: "CENTRAL10")
-        mock.gyms[gym.id] = gym
-
-        let foundUpper = try await mock.fetchGymByJoinCode(code: "CENTRAL10")
-        let foundLower = try await mock.fetchGymByJoinCode(code: "central10")
-
-        #expect(foundUpper?.id == gym.id)
-        #expect(foundLower?.id == gym.id)
-    }
-
-    @Test("joinGymByCode adds user to member list and user's gyms")
-    func joinGymByCodeAddsMemberToGymAndMyGyms() async throws {
-        let mock = MockBackendService()
-        let gym = Gym(name: "Iron Temple", ownerUID: "owner-1", joinCode: "IRON99")
-        mock.gyms[gym.id] = gym
-
-        let memberUID = "member-1"
-        mock.signedInUID = memberUID
-        mock.users[memberUID] = PlatformUser(id: memberUID, firstName: "Alex", lastName: "Cohen", email: "alex@example.com", role: .user)
-
-        let joinedGym = try await mock.joinGymByCode(code: "IRON99")
-
-        #expect(joinedGym.id == gym.id)
-        #expect(mock.members[gym.id]?.contains(where: { $0.id == memberUID }) == true)
-        #expect(mock.myGymsList.contains(where: { $0.gym.id == gym.id && $0.role == .member }) == true)
+        #expect(mock.myGymsList.contains(where: { $0.gym.id == gym.id }) == false)
     }
 }

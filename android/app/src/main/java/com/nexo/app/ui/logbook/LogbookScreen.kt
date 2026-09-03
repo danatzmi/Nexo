@@ -1,5 +1,6 @@
 package com.nexo.app.ui.logbook
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,7 +11,9 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ChevronRight
@@ -44,6 +47,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -135,6 +139,7 @@ fun LogbookScreen(repository: BackendRepository, gymId: String) {
     if (showAddDialog) {
         ActivityEditDialog(
             initial = null,
+            existingMovements = uiState.displayedMovements,
             onDismiss = { showAddDialog = false },
             onSave = { movement, score, reps, sets ->
                 viewModel.addLog(movement, score, reps, sets, System.currentTimeMillis())
@@ -145,6 +150,7 @@ fun LogbookScreen(repository: BackendRepository, gymId: String) {
     editingLog?.let { log ->
         ActivityEditDialog(
             initial = log,
+            existingMovements = uiState.displayedMovements,
             onDismiss = { editingLog = null },
             onSave = { movement, score, reps, sets ->
                 viewModel.updateLog(log, movement, score, reps, sets, log.dateMillis)
@@ -321,6 +327,7 @@ private fun HistoryLogRow(log: WorkoutLog, onEdit: () -> Unit, onDelete: () -> U
 @Composable
 private fun ActivityEditDialog(
     initial: WorkoutLog?,
+    existingMovements: List<String>,
     onDismiss: () -> Unit,
     onSave: (movement: String, score: Double?, reps: Int?, sets: Int?) -> Unit
 ) {
@@ -340,6 +347,16 @@ private fun ActivityEditDialog(
                     label = { Text("e.g. Squat, Yoga Flow, Heavy Bag Work") },
                     singleLine = true
                 )
+                // Quick-pick chips for movements already logged — appending
+                // another result for an existing exercise (e.g. a second
+                // Squat entry) doesn't require retyping the name.
+                if (existingMovements.isNotEmpty()) {
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(existingMovements, key = { it }) { name ->
+                            MovementChip(label = name, selected = movement == name, onClick = { movement = name })
+                        }
+                    }
+                }
                 OutlinedTextField(value = scoreText, onValueChange = { scoreText = it }, label = { Text("Score / Value — optional") }, singleLine = true)
                 OutlinedTextField(value = repsText, onValueChange = { repsText = it }, label = { Text("Reps — optional") }, singleLine = true)
                 OutlinedTextField(value = setsText, onValueChange = { setsText = it }, label = { Text("Sets — optional") }, singleLine = true)
@@ -359,6 +376,21 @@ private fun ActivityEditDialog(
             ) { Text("Save") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } }
+    )
+}
+
+@Composable
+private fun MovementChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        text = label,
+        style = MaterialTheme.typography.labelSmall,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        color = if (selected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(CircleShape)
+            .background(if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 6.dp)
     )
 }
 

@@ -107,7 +107,7 @@ private struct PlanRow: View {
                         .foregroundStyle(plan.type == .monthly ? Color.blue : Color.orange)
                 }
                 Spacer()
-                Text(plan.price, format: .currency(code: "USD").precision(.fractionLength(0...2)))
+                Text(plan.price.truncatingRemainder(dividingBy: 1) == 0 ? String(format: "%.0f", plan.price) : String(format: "%.2f", plan.price))
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -181,7 +181,7 @@ private struct PlanEditorSheet: View {
                 Section("Plan Details") {
                     TextField("Plan Name (e.g. Gold Unlimited, 10-Class Pass)", text: $name)
                         .autocorrectionDisabled()
-                    TextField("Price ($)", text: $priceText)
+                    TextField("Price", text: $priceText)
                         .keyboardType(.decimalPad)
                 }
 

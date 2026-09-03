@@ -3,8 +3,11 @@ package com.nexo.app.ui.schedule
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.nexo.app.data.repository.BackendRepository
+import com.nexo.app.domain.model.ActivePlanItem
 import com.nexo.app.domain.model.GymClass
 import com.nexo.app.domain.model.Member
+import com.nexo.app.domain.model.PlanComponentType
+import com.nexo.app.domain.model.PlanResetPeriod
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -36,11 +39,26 @@ class ClassDetailViewModel(
         val isWaitlisted: Boolean = false,
         val waitlistPosition: Int? = null,
         val isActionInProgress: Boolean = false,
+        /** Non-null once a Book/Waitlist action completes (optimistically, on tap) — the screen shows the success popup then clears this via [clearSuccessMessage]. */
+        val successMessage: SuccessMessage? = null,
+        /** This member's active wallet items for this gym — loaded once alongside booking status, used by [bookingBlockedReason] to proactively dim the "Book Class" button before a doomed attempt is even made. Owners/Coaches/Platform Admins bypass this check entirely (the screen skips it via `canManage`), so it doesn't matter that this is fetched for them too. */
+        val activePlans: List<ActivePlanItem> = emptyList(),
         val didDelete: Boolean = false,
         val errorMessage: String? = null
     ) {
         val checkedInCount: Int get() = attendees.count { it.isCheckedIn }
+
+        /** null when this member has an active plan/credit balance covering [gymClass] (or when the caller bypasses this check — gated via `canManage`); otherwise a short reason to show in place of a dimmed "Book Class" button. Mirrors `ScheduleViewModel.UiState.bookingBlockedReason(gymClass:)`. */
+        val bookingBlockedReason: String?
+            get() {
+                val target = gymClass ?: return null
+                val matching = activePlans.filter { it.matches(target) }
+                if (matching.any { it.type == PlanComponentType.UNLIMITED || it.availableCredits() > 0 }) return null
+                return if (matching.isEmpty()) "No active plan" else "No credits remaining"
+            }
     }
+
+    data class SuccessMessage(val title: String, val message: String, val isWaitlist: Boolean)
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
@@ -67,6 +85,10 @@ class ClassDetailViewModel(
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(errorMessage = "Error loading class: ${e.message}")
             }
+            repository.currentUID()?.let { uid ->
+                val plans = try { repository.fetchActivePlans(gymId, uid) } catch (e: Exception) { emptyList() }
+                _uiState.value = _uiState.value.copy(activePlans = plans)
+            }
         }
     }
 
@@ -84,49 +106,18 @@ class ClassDetailViewModel(
 
     /**
      * Optimistic booking/waitlist actions — update [_uiState] immediately
-     * (0ms perceived latency) instead of re-reading the class, attendees,
-     * and booking/waitlist status over the network after every mutation,
+     * (0ms perceived latency) instead of waiting on a network round-trip,
      * reverting on failure. Mirrors iOS's `ClassDetailViewModel.book`/
-     * `cancelBooking`/`joinWaitlist`/`leaveWaitlist`, which mutate
-     * `gymClass`/`isBooked`/`isWaitlisted` directly and never re-fetch
-     * after a successful mutation. [UiState.waitlistPosition] is
-     * intentionally left stale by `joinWaitlist`/`leaveWaitlist` here too
-     * — iOS only recomputes it in `loadBookingStatus()` (initial load),
-     * not on every waitlist toggle.
-     *
-     * Deliberately do not touch [UiState.isActionInProgress] here (unlike
-     * `deleteClass`, which is a genuinely blocking action): `isBooked`/
-     * `isWaitlisted` already flip synchronously below, so the action bar
-     * button already switches to the opposite action before the network
-     * call starts. Gating it on `isActionInProgress` too would disable
-     * *that new* button and show its spinner for the duration of the
-     * call — undoing the instant feedback this is meant to give.
+     * `cancelBooking`/`joinWaitlist`/`leaveWaitlist`.
      */
-    fun book() {
-        val gymClass = _uiState.value.gymClass ?: return
-        _uiState.value = _uiState.value.copy(
-            isBooked = true,
-            gymClass = gymClass.copy(currentAttendees = gymClass.currentAttendees + 1)
-        )
-
-        viewModelScope.launch {
-            try {
-                repository.bookClass(gymId, classId)
-            } catch (e: Exception) {
-                val current = _uiState.value.gymClass ?: gymClass
-                _uiState.value = _uiState.value.copy(
-                    isBooked = false,
-                    gymClass = current.copy(currentAttendees = (current.currentAttendees - 1).coerceAtLeast(0)),
-                    errorMessage = "Failed to book: ${e.message}"
-                )
-            }
-        }
-    }
-
     fun cancel() {
         val gymClass = _uiState.value.gymClass ?: return
+        val previousPlans = _uiState.value.activePlans
+        val updatedPlans = refundCreditLocally(previousPlans, gymClass)
+
         _uiState.value = _uiState.value.copy(
             isBooked = false,
+            activePlans = updatedPlans,
             gymClass = gymClass.copy(currentAttendees = (gymClass.currentAttendees - 1).coerceAtLeast(0))
         )
 
@@ -137,29 +128,9 @@ class ClassDetailViewModel(
                 val current = _uiState.value.gymClass ?: gymClass
                 _uiState.value = _uiState.value.copy(
                     isBooked = true,
+                    activePlans = previousPlans,
                     gymClass = current.copy(currentAttendees = current.currentAttendees + 1),
                     errorMessage = "Failed to cancel: ${e.message}"
-                )
-            }
-        }
-    }
-
-    fun joinWaitlist() {
-        val gymClass = _uiState.value.gymClass ?: return
-        _uiState.value = _uiState.value.copy(
-            isWaitlisted = true,
-            gymClass = gymClass.copy(waitlistCount = gymClass.waitlistCount + 1)
-        )
-
-        viewModelScope.launch {
-            try {
-                repository.joinWaitlist(gymId, classId)
-            } catch (e: Exception) {
-                val current = _uiState.value.gymClass ?: gymClass
-                _uiState.value = _uiState.value.copy(
-                    isWaitlisted = false,
-                    gymClass = current.copy(waitlistCount = (current.waitlistCount - 1).coerceAtLeast(0)),
-                    errorMessage = "Failed to join waitlist: ${e.message}"
                 )
             }
         }
@@ -184,6 +155,69 @@ class ClassDetailViewModel(
                 )
             }
         }
+    }
+
+    fun book() {
+        val gymClass = _uiState.value.gymClass ?: return
+        val previousPlans = _uiState.value.activePlans
+        val updatedPlans = consumeCreditLocally(previousPlans, gymClass)
+
+        _uiState.value = _uiState.value.copy(
+            isBooked = true,
+            activePlans = updatedPlans,
+            gymClass = gymClass.copy(currentAttendees = gymClass.currentAttendees + 1),
+            successMessage = SuccessMessage(
+                title = "Booked!",
+                message = "${gymClass.title} · ${gymClass.formattedTime}",
+                isWaitlist = false
+            )
+        )
+
+        viewModelScope.launch {
+            try {
+                repository.bookClass(gymId, classId)
+            } catch (e: Exception) {
+                val current = _uiState.value.gymClass ?: gymClass
+                _uiState.value = _uiState.value.copy(
+                    isBooked = false,
+                    activePlans = previousPlans,
+                    gymClass = current.copy(currentAttendees = (current.currentAttendees - 1).coerceAtLeast(0)),
+                    successMessage = null,
+                    errorMessage = "Failed to book: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun joinWaitlist() {
+        val gymClass = _uiState.value.gymClass ?: return
+        _uiState.value = _uiState.value.copy(
+            isWaitlisted = true,
+            gymClass = gymClass.copy(waitlistCount = gymClass.waitlistCount + 1),
+            successMessage = SuccessMessage(
+                title = "Waitlisted!",
+                message = "${gymClass.title} · ${gymClass.formattedTime}",
+                isWaitlist = true
+            )
+        )
+
+        viewModelScope.launch {
+            try {
+                repository.joinWaitlist(gymId, classId)
+            } catch (e: Exception) {
+                val current = _uiState.value.gymClass ?: gymClass
+                _uiState.value = _uiState.value.copy(
+                    isWaitlisted = false,
+                    gymClass = current.copy(waitlistCount = (current.waitlistCount - 1).coerceAtLeast(0)),
+                    successMessage = null,
+                    errorMessage = "Failed to join waitlist: ${e.message}"
+                )
+            }
+        }
+    }
+
+    fun clearSuccessMessage() {
+        _uiState.value = _uiState.value.copy(successMessage = null)
     }
 
     /** Toggles [member]'s check-in for this class — optimistic UI update, rolled back if the repository call fails. Owner/Coach/Platform Admin only (gated in the UI layer via `canManageGym`). */
@@ -227,5 +261,41 @@ class ClassDetailViewModel(
 
     fun clearError() {
         _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+
+    private fun consumeCreditLocally(plans: List<ActivePlanItem>, gymClass: GymClass): List<ActivePlanItem> {
+        if (plans.any { it.matches(gymClass) && it.type == PlanComponentType.UNLIMITED }) return plans
+        val list = plans.toMutableList()
+        val targetIndex = list.indexOfFirst {
+            it.matches(gymClass) && it.type == PlanComponentType.CREDITS && it.availableCredits() > 0
+        }
+        if (targetIndex != -1) {
+            val item = list[targetIndex]
+            val updated = if (item.resetPeriod == PlanResetPeriod.MONTHLY) {
+                item.copy(cycleCreditsUsed = item.cycleCreditsUsed + 1)
+            } else {
+                item.copy(remainingCredits = (item.remainingCredits - 1).coerceAtLeast(0))
+            }
+            list[targetIndex] = updated
+        }
+        return list
+    }
+
+    private fun refundCreditLocally(plans: List<ActivePlanItem>, gymClass: GymClass): List<ActivePlanItem> {
+        if (plans.any { it.matches(gymClass) && it.type == PlanComponentType.UNLIMITED }) return plans
+        val list = plans.toMutableList()
+        val targetIndex = list.indexOfFirst {
+            it.matches(gymClass) && it.type == PlanComponentType.CREDITS
+        }
+        if (targetIndex != -1) {
+            val item = list[targetIndex]
+            val updated = if (item.resetPeriod == PlanResetPeriod.MONTHLY) {
+                item.copy(cycleCreditsUsed = (item.cycleCreditsUsed - 1).coerceAtLeast(0))
+            } else {
+                item.copy(remainingCredits = item.remainingCredits + 1)
+            }
+            list[targetIndex] = updated
+        }
+        return list
     }
 }
